@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#10b981"/>
+      <stop offset="100%" stop-color="#047857"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="url(#bg)"/>
+  <circle cx="256" cy="230" r="130" fill="#ffffff"/>
+  <polygon points="256,165 318,210 294,282 218,282 194,210" fill="#064e3b"/>
+  <path d="M256,100 L256,165 M380,190 L318,210 M332,335 L294,282 M180,335 L218,282 M132,190 L194,210" stroke="#064e3b" stroke-width="14" stroke-linecap="round"/>
+  <circle cx="256" cy="230" r="130" fill="none" stroke="#064e3b" stroke-width="16"/>
+  <rect x="116" y="385" width="280" height="68" rx="34" fill="#ffffff"/>
+  <text x="256" y="431" font-family="sans-serif" font-weight="900" font-size="38" fill="#047857" text-anchor="middle">出発逆算</text>
+</svg>

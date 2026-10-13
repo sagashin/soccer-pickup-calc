@@ -1,0 +1,18 @@
+{
+  "name": "サッカー送迎 出発時間・ルート逆算ナビ",
+  "short_name": "サッカー送迎",
+  "description": "サッカースクール・試合会場への車移動時間と出発時刻をワンタップで逆算するアプリ",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f8fafc",
+  "theme_color": "#059669",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

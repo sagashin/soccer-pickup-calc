@@ -488,9 +488,99 @@ export async function getCoordsByPlaceId(placeId, apiKey) {
 }
 
 /**
- * Google Maps DirectionsService による車ルート & 渋滞最大時間（PESSIMISTIC）自動取得
- * - 指定の目標到着日時から仮の出発時間を算出して問い合わせ
- * - Google公式の最悪渋滞想定（trafficModel: PESSIMISTIC）による所要時間を取得し真の出発時刻へ反復補正
+ * 新世代 Routes API (v2) による車ルート & リアルタイム渋滞予測の直接取得
+ * - Google Cloud Console で有効化された「Routes API」を使用
+ * - staticDuration（通常時間）と duration（渋滞考慮最大時間）を取得
+ */
+async function fetchWithRoutesApiV2({ originCoords, destCoords, arrivalDate, apiKey }) {
+  if (!originCoords?.lat || !originCoords?.lon || !destCoords?.lat || !destCoords?.lon) {
+    throw new Error('緯度経度情報が必要です');
+  }
+
+  const targetDate = arrivalDate instanceof Date ? arrivalDate : new Date(arrivalDate);
+  const now = new Date();
+
+  // 目標到着時刻の約45分前を出発時刻の目安としてリクエスト（未来時刻でなければ現在+3分後に安全補正）
+  let depTime = new Date(targetDate.getTime() - 45 * 60 * 1000);
+  if (depTime.getTime() <= now.getTime()) {
+    depTime = new Date(now.getTime() + 3 * 60 * 1000);
+  }
+
+  const url = 'https://routes.googleapis.com/directions/v2:computeRoutes';
+  const body = {
+    origin: {
+      location: {
+        latLng: {
+          latitude: originCoords.lat,
+          longitude: originCoords.lon,
+        },
+      },
+    },
+    destination: {
+      location: {
+        latLng: {
+          latitude: destCoords.lat,
+          longitude: destCoords.lon,
+        },
+      },
+    },
+    travelMode: 'DRIVE',
+    routingPreference: 'TRAFFIC_AWARE_OPTIMAL',
+    departureTime: depTime.toISOString(),
+    languageCode: 'ja',
+    units: 'METRIC',
+  };
+
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Goog-Api-Key': apiKey,
+      'X-Goog-FieldMask':
+        'routes.duration,routes.staticDuration,routes.distanceMeters,routes.description',
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!res.ok) {
+    const errText = await res.text();
+    console.warn('Routes API HTTP Error:', res.status, errText);
+    throw new Error(`Routes API Error: ${res.status}`);
+  }
+
+  const data = await res.json();
+  if (!data?.routes || data.routes.length === 0) {
+    throw new Error('Routes API: ルートが見つかりませんでした');
+  }
+
+  const route = data.routes[0];
+  const parseSec = (str) => {
+    if (!str) return 0;
+    return parseInt(str.replace('s', ''), 10) || 0;
+  };
+
+  const normalSec = parseSec(route.staticDuration) || parseSec(route.duration);
+  const trafficSec = parseSec(route.duration) || normalSec;
+  const distanceMeters = route.distanceMeters || 0;
+
+  const minMinutes = Math.max(1, Math.round(normalSec / 60));
+  const maxMinutes = Math.max(minMinutes, Math.round(trafficSec / 60));
+
+  return {
+    minMinutes,
+    maxMinutes,
+    standardMinutes: Math.round((minMinutes + maxMinutes) / 2),
+    distanceKm: (distanceMeters / 1000).toFixed(1),
+    summary: route.description || '',
+    isGoogleRealtime: true,
+    source: 'routes-api-v2',
+  };
+}
+
+/**
+ * Google Maps による車ルート & 渋滞最大時間（通常〜最大レンジ）自動取得
+ * 1. 新世代「Routes API (v2)」を最優先実行（新プロジェクト対応）
+ * 2. 従来の「DirectionsService」へフォールバック
  */
 export async function fetchGoogleDrivingRouteWithTraffic({
   origin,
@@ -500,6 +590,24 @@ export async function fetchGoogleDrivingRouteWithTraffic({
   arrivalDate,
   apiKey,
 }) {
+  // 1. 新世代 Routes API を最優先で試行（Google Cloud で Routes API を選択している場合に即座に成功！）
+  if (originCoords?.lat && destCoords?.lat) {
+    try {
+      const routesV2Result = await fetchWithRoutesApiV2({
+        originCoords,
+        destCoords,
+        arrivalDate,
+        apiKey,
+      });
+      if (routesV2Result && routesV2Result.minMinutes) {
+        return routesV2Result;
+      }
+    } catch (v2Err) {
+      console.warn('新世代 Routes API 失敗、従来の DirectionsService へフォールバック:', v2Err);
+    }
+  }
+
+  // 2. 従来の DirectionsService（旧プロジェクト用フォールバック）
   const maps = await loadGoogleMapsScript(apiKey);
   if (!maps?.DirectionsService) {
     throw new Error('DirectionsService が利用できません。');

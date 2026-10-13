@@ -126,6 +126,113 @@ function getQuickDates() {
   return list;
 }
 
+/**
+ * 時間（分）を「○時間○分」または「○分」にフォーマット（例: 90 -> 1時間30分）
+ */
+function formatMinutesLabel(minutes) {
+  if (!minutes || minutes <= 0) return '0分';
+  const m = Math.round(minutes);
+  if (m < 60) return `${m}分`;
+  const h = Math.floor(m / 60);
+  const rem = m % 60;
+  return rem === 0 ? `${h}時間` : `${h}時間${rem}分`;
+}
+
+/**
+ * 分数レンジをGoogleマップ風に「通常 1時間30分〜2時間10分」とフォーマット
+ */
+function formatDurationRange(minM, maxM) {
+  const minText = formatMinutesLabel(minM);
+  const maxText = formatMinutesLabel(maxM);
+  if (minM === maxM) return minText;
+  return `通常 ${minText}〜${maxText}`;
+}
+
+/**
+ * 分数レンジの短縮表示（例: 1時間30分〜2時間10分）
+ */
+function formatMinutesRangeShort(minM, maxM) {
+  const minText = formatMinutesLabel(minM);
+  const maxText = formatMinutesLabel(maxM);
+  if (minM === maxM) return minText;
+  return `${minText}〜${maxText}`;
+}
+
+/**
+ * Googleマップの統計渋滞実績（通常〜最大幅）に準拠した所要時間レンジ計算
+ */
+function calculateDriveDurationRange(baseMinutes, dateStr, timeStr) {
+  if (!baseMinutes || baseMinutes <= 0) return null;
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const [hh, mm] = timeStr.split(':').map(Number);
+  const dt = new Date(y, (m || 1) - 1, d || 1);
+  const day = dt.getDay(); // 0: Sun, 6: Sat
+  const isWeekend = day === 0 || day === 6;
+
+  // 走行中間時間帯で交通状況を判定
+  const midMinutes = (hh || 12) * 60 + (mm || 0) - Math.round(baseMinutes / 2);
+  const hour = ((midMinutes / 60) + 24) % 24;
+
+  let minMultiplier = 1.0;
+  let maxMultiplier = 1.25;
+  let situation = '通常のスムーズな交通量';
+
+  if (isWeekend) {
+    if (hour >= 7 && hour <= 11) {
+      // 週末の朝: レジャー・遠征・行楽ラッシュ
+      minMultiplier = 1.05;
+      maxMultiplier = 1.45;
+      situation = `${WEEKDAYS_JA[day]}曜・朝の遠征・お出かけ混雑ピーク`;
+    } else if (hour >= 15.5 && hour <= 19.5) {
+      // 週末の夕方: 帰宅ラッシュ
+      minMultiplier = 1.1;
+      maxMultiplier = 1.5;
+      situation = `${WEEKDAYS_JA[day]}曜・夕方の帰宅混雑ピーク`;
+    } else if (hour > 11 && hour < 15.5) {
+      minMultiplier = 1.0;
+      maxMultiplier = 1.3;
+      situation = `${WEEKDAYS_JA[day]}曜・日中のお出かけ交通量`;
+    } else {
+      minMultiplier = 1.0;
+      maxMultiplier = 1.15;
+      situation = `${WEEKDAYS_JA[day]}曜・早朝/夜間（スムーズ）`;
+    }
+  } else {
+    if (hour >= 7 && hour <= 9.5) {
+      // 平日朝: 通勤・通学・物流ラッシュ
+      minMultiplier = 1.1;
+      maxMultiplier = 1.45;
+      situation = `平日 (${WEEKDAYS_JA[day]})・朝の通勤混雑ピーク`;
+    } else if (hour >= 16.5 && hour <= 19.5) {
+      // 平日夕方: 送迎・帰宅混雑
+      minMultiplier = 1.1;
+      maxMultiplier = 1.45;
+      situation = `平日 (${WEEKDAYS_JA[day]})・夕方の送迎・帰宅混雑ピーク`;
+    } else if (hour > 9.5 && hour < 16.5) {
+      minMultiplier = 1.0;
+      maxMultiplier = 1.25;
+      situation = `平日 (${WEEKDAYS_JA[day]})・日中通常交通量`;
+    } else {
+      minMultiplier = 1.0;
+      maxMultiplier = 1.15;
+      situation = `平日 (${WEEKDAYS_JA[day]})・早朝/夜間（スムーズ）`;
+    }
+  }
+
+  const minM = Math.max(1, Math.round(baseMinutes * minMultiplier));
+  const maxM = Math.max(minM + (baseMinutes >= 30 ? 10 : 5), Math.round(baseMinutes * maxMultiplier));
+  const standardM = Math.round((minM + maxM) / 2);
+
+  return {
+    minMinutes: minM,
+    maxMinutes: maxM,
+    standardMinutes: standardM,
+    situation,
+    formattedRange: formatDurationRange(minM, maxM),
+    formattedShort: formatMinutesRangeShort(minM, maxM),
+  };
+}
+
 function getAutoTrafficInfo(dateStr, timeStr, estimatedMinutes = 35) {
   const [y, m, d] = dateStr.split('-').map(Number);
   const [hh, mm] = timeStr.split(':').map(Number);
@@ -823,7 +930,7 @@ export default function App() {
     return Math.floor(dt.getTime() / 1000);
   }, [travelDate, targetArrivalMinusBuffer]);
 
-  // --- 🚗 車モードの逆算ロジック ---
+  // --- 🚗 車モードの逆算ロジック (通常〜最大レンジ対応) ---
   const autoTraffic = getAutoTrafficInfo(
     travelDate,
     targetArrivalMinusBuffer.formatted,
@@ -834,19 +941,58 @@ export default function App() {
   const parsedManualMinutes = parseInt(manualDriveMinutes, 10);
   const hasManualOverride = !Number.isNaN(parsedManualMinutes) && parsedManualMinutes > 0;
 
+  // Googleマップ風の「通常〜最大」所要時間レンジ（統計渋滞モデル）
+  const driveRange = useMemo(() => {
+    if (!routeResult?.baseDurationMinutes) return null;
+    const baseM = routeResult.baseDurationMinutes;
+    if (hasManualOverride) {
+      return {
+        minMinutes: parsedManualMinutes,
+        maxMinutes: parsedManualMinutes,
+        standardMinutes: parsedManualMinutes,
+        situation: 'Googleマップ確認時間（手動入力）',
+        formattedRange: formatMinutesLabel(parsedManualMinutes),
+        formattedShort: formatMinutesLabel(parsedManualMinutes),
+      };
+    }
+    return calculateDriveDurationRange(
+      baseM,
+      travelDate,
+      targetArrivalMinusBuffer.formatted
+    );
+  }, [routeResult, hasManualOverride, parsedManualMinutes, travelDate, targetArrivalMinusBuffer]);
+
+  // 最大時間（渋滞・ピーク時）想定: 遅刻厳禁の安全出発時刻
+  const maxDriveMinutes = hasManualOverride
+    ? parsedManualMinutes
+    : driveRange?.maxMinutes || (routeResult ? Math.round(routeResult.baseDurationMinutes * activeMultiplier) : null);
+
+  // 通常時間（スムーズ時）想定
+  const minDriveMinutes = hasManualOverride
+    ? parsedManualMinutes
+    : driveRange?.minMinutes || (routeResult ? routeResult.baseDurationMinutes : null);
+
+  // 推奨標準時間
   const estimatedDriveMinutes = hasManualOverride
     ? parsedManualMinutes
+    : driveRange?.maxMinutes // 安全第一で最大時間をデフォルトに設定
+    ? driveRange.maxMinutes
     : routeResult
     ? Math.max(1, Math.round(routeResult.baseDurationMinutes * activeMultiplier))
     : null;
 
-  const totalLeadMinutes = estimatedDriveMinutes !== null
-    ? estimatedDriveMinutes + bufferMinutes
+  // 出発時刻: 最大渋滞想定（遅くともこの時刻）
+  const latestDepartureInfo = maxDriveMinutes !== null
+    ? subtractMinutesFromTime(arrivalTime, maxDriveMinutes + bufferMinutes)
     : null;
 
-  const departureInfo = totalLeadMinutes !== null
-    ? subtractMinutesFromTime(arrivalTime, totalLeadMinutes)
+  // 出発時刻: 通常スムーズ想定
+  const earliestDepartureInfo = minDriveMinutes !== null
+    ? subtractMinutesFromTime(arrivalTime, minDriveMinutes + bufferMinutes)
     : null;
+
+  // 統合された車モード出発情報 (遅くとも出発すべき安全時刻)
+  const departureInfo = latestDepartureInfo;
 
   // 車用 Googleマップ URL
   const googleMapsNavUrl = `https://www.google.com/maps/dir/?api=1&origin=${encodeURIComponent(
@@ -1132,18 +1278,18 @@ export default function App() {
                           isTrainMode ? 'text-indigo-200' : 'text-emerald-200'
                         }`}
                       >
-                        {isTrainMode ? 'おすすめの自宅出発時刻' : 'おすすめの出発時刻'}
+                        {isTrainMode
+                          ? 'おすすめの自宅出発時刻'
+                          : '遅くともこの時刻に出発（最大混雑想定）'}
                       </span>
-                      <span className="text-[11px] font-bold text-amber-200/90">
+                      <span className="text-[11px] font-bold text-amber-200/90 truncate ml-2">
                         {isTrainMode
                           ? hasManualTransitOverride
                             ? '乗換案内確認時間を反映中'
                             : transitResult?.summary || '電車・徒歩移動'
                           : hasManualOverride
                           ? 'Googleマップ確認時間を反映中'
-                          : trafficMode === 'auto'
-                          ? autoTraffic.reason
-                          : `混雑係数 ${activeMultiplier}x`}
+                          : driveRange?.situation || autoTraffic.reason}
                       </span>
                     </div>
 
@@ -1155,12 +1301,47 @@ export default function App() {
                       >
                         {activeDepartureInfo.formatted}
                       </span>
-                      <span className="text-lg font-extrabold text-white">
+                      <span className="text-base sm:text-lg font-extrabold text-white">
                         に出発してください
                       </span>
                     </div>
                     {activeDepartureInfo.dayOffset < 0 && (
                       <p className="text-xs text-amber-200 font-bold">※前日の出発時刻です</p>
+                    )}
+
+                    {/* 🚗 Googleマップ風 所要時間レンジ ＆ 出発目安インフォバー */}
+                    {!isTrainMode && driveRange && (
+                      <div className="mt-2.5 bg-black/30 backdrop-blur-sm border border-white/20 rounded-2xl p-2.5 sm:p-3 flex items-center justify-between gap-2.5 shadow-sm">
+                        <div className="flex items-center gap-2.5 min-w-0">
+                          <div className="w-8 h-8 rounded-xl bg-emerald-500/30 border border-emerald-400/40 text-emerald-300 flex items-center justify-center shrink-0">
+                            <Car className="w-4 h-4" />
+                          </div>
+                          <div className="min-w-0">
+                            <div className="text-xs font-black text-amber-300 flex items-center gap-1.5 flex-wrap">
+                              <span>{driveRange.formattedRange}</span>
+                              {routeResult?.distanceKm && (
+                                <span className="text-slate-300 text-[11px] font-normal">
+                                  ({routeResult.distanceKm} km)
+                                </span>
+                              )}
+                            </div>
+                            <div className="text-[11px] text-slate-200 truncate mt-0.5">
+                              出発目安:{' '}
+                              <strong className="text-white">
+                                {earliestDepartureInfo && earliestDepartureInfo.formatted !== latestDepartureInfo.formatted
+                                  ? `${latestDepartureInfo.formatted} 〜 ${earliestDepartureInfo.formatted} 頃`
+                                  : `${activeDepartureInfo.formatted} 頃`}
+                              </strong>
+                              <span className="text-amber-200/90 ml-1">
+                                （遅くとも {latestDepartureInfo.formatted} 発）
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                        <span className="text-[10px] px-2 py-0.5 rounded-md font-bold bg-amber-400 text-slate-950 shrink-0 whitespace-nowrap shadow-xs">
+                          最大時間想定
+                        </span>
+                      </div>
                     )}
 
                     {/* 電車モード時の最寄り駅クイックインフォ */}
@@ -1182,14 +1363,18 @@ export default function App() {
                               : '電車移動（目安）'
                             : hasManualOverride
                             ? '車移動（指定）'
-                            : '車移動（推定）'}
+                            : '車移動（通常〜最大）'}
                         </div>
                         <div
                           id="drive-duration-display"
                           data-testid="drive-duration-display"
-                          className="text-base font-extrabold text-white"
+                          className="text-xs sm:text-sm font-extrabold text-white truncate"
                         >
-                          約{activeEstimatedMinutes}分
+                          {isTrainMode
+                            ? `約${activeEstimatedMinutes}分`
+                            : driveRange
+                            ? driveRange.formattedShort
+                            : `約${activeEstimatedMinutes}分`}
                         </div>
                       </div>
                       <div className="bg-white/10 rounded-xl p-2">
@@ -1698,7 +1883,7 @@ export default function App() {
                       placeholder={
                         isTrainMode
                           ? '例: 45 (YahooやGoogleで調べた所要時間)'
-                          : '例: 35 (Googleマップで確認した分数)'
+                          : '例: 130 (Googleマップの最大時間などを手動反映)'
                       }
                       value={isTrainMode ? manualTransitMinutes : manualDriveMinutes}
                       onChange={(e) =>
@@ -1710,10 +1895,10 @@ export default function App() {
                     />
                     <span className="text-xs font-bold text-slate-600 shrink-0">分</span>
                   </div>
-                  <p className="text-[10px] text-slate-400 mt-1">
+                  <p className="text-[10px] text-slate-500 mt-1">
                     {isTrainMode
                       ? '※YahooやGoogleで確認した正確な電車移動分数を入力すると、即座に出発時刻が再計算されます'
-                      : '※道路のリアルタイム渋滞時間を直接反映して出発時刻を微調整できます'}
+                      : '※Googleマップで調べた最大所要時間（例: 2時間10分なら130分）を入力すれば、その最大時間に合わせて出発時刻を再計算できます'}
                   </p>
                 </div>
 

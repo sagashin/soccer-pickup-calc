@@ -153,7 +153,7 @@ export default function ScheduleImageImporter({ onApplySchedule }) {
               <h2 className="text-sm font-black text-slate-900 leading-tight">
                 日程表画像から一発逆算
               </h2>
-              <span className="bg-emerald-600 text-white text-[10px] font-black px-1.5 py-0.5 rounded-full flex items-center gap-0.5 shadow-2xs">
+              <span className="bg-emerald-600 text-white text-[10px] font-black px-1.5 py-0.5 rounded-full flex items-center gap-0.5 shadow-sm">
                 <Sparkles className="w-2.5 h-2.5" /> AI解析
               </span>
             </div>
@@ -201,7 +201,7 @@ export default function ScheduleImageImporter({ onApplySchedule }) {
             <button
               type="button"
               onClick={handleLoadSample}
-              className="text-emerald-700 hover:text-emerald-800 font-extrabold flex items-center gap-1 bg-white border border-emerald-300 px-2.5 py-1 rounded-xl shadow-2xs transition active:scale-95"
+              className="text-emerald-700 hover:text-emerald-800 font-extrabold flex items-center gap-1 bg-white border border-emerald-300 px-2.5 py-1 rounded-xl shadow-sm transition active:scale-95"
             >
               <Play className="w-3 h-3 fill-emerald-600" />
               <span>サンプル日程表で試す</span>
@@ -423,7 +423,7 @@ export default function ScheduleImageImporter({ onApplySchedule }) {
                             }}
                             className={`py-2 px-2 rounded-xl text-xs font-extrabold border transition ${
                               active
-                                ? 'bg-emerald-600 text-white border-emerald-600 shadow-xs'
+                                ? 'bg-emerald-600 text-white border-emerald-600 shadow-sm'
                                 : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
                             }`}
                           >

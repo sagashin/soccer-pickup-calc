@@ -37,6 +37,11 @@ import {
   buildYahooTransitUrl,
   buildGoogleTransitUrl,
 } from './transitService';
+import {
+  getSoccerRelevanceScore,
+  getCachedCoords,
+  saveCachedCoords,
+} from './geoUtils';
 
 const STORAGE_KEYS = {
   ORIGIN: 'soccer_pickup_origin_v1',
@@ -49,7 +54,7 @@ const STORAGE_KEYS = {
   TRANSPORT_MODE: 'soccer_pickup_transport_mode_v1',
 };
 
-const DEFAULT_ORIGIN = '東京都北区神谷2-45-7';
+const DEFAULT_ORIGIN = '赤羽駅';
 const DEFAULT_DESTINATION = '埼玉県さいたま市緑区大門2372-1';
 
 const DEFAULT_PRESETS = [
@@ -121,13 +126,16 @@ function getQuickDates() {
   return list;
 }
 
-function getAutoTrafficInfo(dateStr, timeStr) {
+function getAutoTrafficInfo(dateStr, timeStr, estimatedMinutes = 35) {
   const [y, m, d] = dateStr.split('-').map(Number);
   const [hh, mm] = timeStr.split(':').map(Number);
   const dt = new Date(y, (m || 1) - 1, d || 1);
   const day = dt.getDay(); // 0: Sun, 6: Sat
   const isWeekend = day === 0 || day === 6;
-  const hourDecimal = (hh || 0) + (mm || 0) / 60;
+
+  // 走行中の中間時間帯（現地到着目標時刻 - 想定走行時間の半分）でラッシュを判定
+  const midTotalMinutes = (hh || 12) * 60 + (mm || 0) - Math.round((estimatedMinutes || 35) / 2);
+  const hourDecimal = ((midTotalMinutes / 60) + 24) % 24;
 
   if (isWeekend) {
     if (hourDecimal >= 8 && hourDecimal <= 18.5) {
@@ -145,27 +153,6 @@ function getAutoTrafficInfo(dateStr, timeStr) {
   }
 }
 
-function getSoccerRelevanceScore(name, category, type) {
-  let s = 0;
-  const n = (name || '').toLowerCase();
-  const c = category || '';
-  const t = type || '';
-
-  // スポーツ施設・運動公園・グラウンド・スタジアム・学校を最優先
-  if (c === 'leisure' && (t === 'park' || t === 'pitch' || t === 'sports_centre' || t === 'stadium' || t === 'track')) s += 100;
-  if (c === 'amenity' && (t === 'school' || t === 'college' || t === 'university')) s += 80;
-  if (n.includes('運動公園') || n.includes('グラウンド') || n.includes('スタジアム') || n.includes('スポーツ') || n.includes('サッカー') || n.includes('フィールド')) s += 60;
-  if (n.includes('公園')) s += 35;
-  if (n.includes('高校') || n.includes('学校') || n.includes('中学校') || n.includes('大学')) s += 45;
-
-  // 病院・クリニック・無関係な施設を大きく減点して除外・後回し
-  if (t === 'hospital' || t === 'clinic' || n.includes('病院') || n.includes('医院') || n.includes('診療所')) s -= 150;
-  if (t === 'hotel' || n.includes('ホテル')) s -= 50;
-  if (t === 'station' || n.includes('駅')) s -= 20;
-
-  return s;
-}
-
 async function geocodeAddress(address) {
   const trimmed = address.trim();
   const coordMatch = trimmed.match(/^(-?\d+(\.\d+)?)\s*,\s*(-?\d+(\.\d+)?)$/);
@@ -178,12 +165,21 @@ async function geocodeAddress(address) {
     };
   }
 
+  // 0. キャッシュに保存されている場合は外部通信なしで即座に返却（高速化 & API節約）
+  const cached = getCachedCoords(trimmed);
+  if (cached) {
+    return cached;
+  }
+
   // 1. Google Maps APIキーが設定されている場合は Google Maps を最優先実行！ (西武台第2なども一発特定)
   const gmapsKey = getSavedGoogleMapsApiKey();
   if (gmapsKey) {
     try {
       const gResult = await geocodeWithGoogleMaps(trimmed, gmapsKey);
-      if (gResult) return gResult;
+      if (gResult) {
+        saveCachedCoords(trimmed, gResult);
+        return gResult;
+      }
     } catch (e) {
       console.warn('Google Maps geocoding error, falling back to OSM:', e);
     }
@@ -294,36 +290,36 @@ async function geocodeAddress(address) {
     trimmed
   );
 
+  let finalResult = null;
   if (looksLikeFacility) {
-    const nomResult = await fetchFromNominatim(trimmed);
-    if (nomResult) return nomResult;
-    const gsiResult = await fetchFromGsi(true);
-    if (gsiResult) return gsiResult;
+    finalResult = await fetchFromNominatim(trimmed);
+    if (!finalResult) finalResult = await fetchFromGsi(true);
   } else if (hasMunicipality) {
-    const gsiResult = await fetchFromGsi(false);
-    if (gsiResult) return gsiResult;
-    const nomResult = await fetchFromNominatim(trimmed);
-    if (nomResult) return nomResult;
+    finalResult = await fetchFromGsi(false);
+    if (!finalResult) finalResult = await fetchFromNominatim(trimmed);
   } else {
-    const gsiExact = await fetchFromGsi(true);
-    if (gsiExact) return gsiExact;
-    const nomResult = await fetchFromNominatim(trimmed);
-    if (nomResult) return nomResult;
+    finalResult = await fetchFromGsi(true);
+    if (!finalResult) finalResult = await fetchFromNominatim(trimmed);
   }
 
   // 3. 学校名＋グラウンド等のフォールバック分解 (例: 「西武台第2グラウンド」→「西武台高校」で本校を検索)
-  if (coreQuery.length >= 2 && coreQuery !== trimmed) {
+  if (!finalResult && coreQuery.length >= 2 && coreQuery !== trimmed) {
     const schoolQuery =
       coreQuery.endsWith('高校') || coreQuery.endsWith('学校')
         ? coreQuery
         : `${coreQuery}高校`;
     const fallbackNom = await fetchFromNominatim(schoolQuery);
     if (fallbackNom) {
-      return {
+      finalResult = {
         ...fallbackNom,
         displayName: `${fallbackNom.displayName} (母体施設)`,
       };
     }
+  }
+
+  if (finalResult) {
+    saveCachedCoords(trimmed, finalResult);
+    return finalResult;
   }
 
   throw new Error(
@@ -431,8 +427,8 @@ function formatJapaneseDateLabel(dateStr) {
 export default function App() {
   const [origin, setOrigin] = useState(() => {
     const saved = localStorage.getItem(STORAGE_KEYS.ORIGIN);
-    // 以前のデフォルト値「二子玉川駅」が保存されていた場合も新しいデフォルトに更新
-    if (!saved || saved === '二子玉川駅') {
+    // 以前のデフォルト値「二子玉川駅」や特定の番地が保存されていた場合も新しいデフォルトに更新
+    if (!saved || saved === '二子玉川駅' || saved.includes('神谷2-45-7')) {
       return DEFAULT_ORIGIN;
     }
     return saved;
@@ -469,7 +465,13 @@ export default function App() {
   const [destinationCandidates, setDestinationCandidates] = useState([]);
 
   const [travelDate, setTravelDate] = useState(() => {
-    return localStorage.getItem(STORAGE_KEYS.TRAVEL_DATE) || formatLocalDate(new Date());
+    const todayStr = formatLocalDate(new Date());
+    const saved = localStorage.getItem(STORAGE_KEYS.TRAVEL_DATE);
+    // 保存された日付が未設定、または過去日の場合は今日に自動リセット
+    if (!saved || saved < todayStr) {
+      return todayStr;
+    }
+    return saved;
   });
 
   const [arrivalTime, setArrivalTime] = useState(() => {
@@ -622,16 +624,18 @@ export default function App() {
     }
 
     const requestId = ++routeRequestIdRef.current;
-    const isStale = () => requestId !== routeRequestIdRef.current;
+    let timedOut = false;
+    const isStale = () => timedOut || requestId !== routeRequestIdRef.current;
 
     setLoading(true);
     setError('');
 
-    // セーフティガード：万一通信がハングしても最大8秒でローディングを必ず解除
+    // セーフティガード：万一通信がハングしても最大8秒でローディングを必ず解除し以降の反映を無効化
     const safetyTimer = setTimeout(() => {
-      if (!isStale()) {
+      if (requestId === routeRequestIdRef.current) {
+        timedOut = true;
         setLoading(false);
-        setError((prev) => prev || 'ルート計算がタイムアウトしました。電波状況またはAPI設定を確認してください。');
+        setError('ルート計算がタイムアウトしました。電波状況またはAPI設定を確認してください。');
       }
     }, 8000);
 
@@ -660,9 +664,17 @@ export default function App() {
       let transitData = null;
       if (gKey) {
         try {
+          // 集合時刻ではなく、目標到着時刻（集合時刻 - バッファ分前）で正確な電車ダイヤを検索
+          const targetArr = subtractMinutesFromTime(arrivalTime, bufferMinutes);
           const [y, m, day] = travelDate.split('-').map(Number);
-          const [hh, mm] = arrivalTime.split(':').map(Number);
-          const arrDate = new Date(y, (m || 1) - 1, day || 1, hh || 12, mm || 0);
+          const arrDate = new Date(
+            y,
+            (m || 1) - 1,
+            day || 1,
+            targetArr.hours,
+            targetArr.minutes,
+            0
+          );
           transitData = await fetchGoogleTransitRoute({
             origin: o,
             destination: d,
@@ -712,9 +724,11 @@ export default function App() {
       }
     } finally {
       clearTimeout(safetyTimer);
-      setLoading(false);
+      if (!isStale()) {
+        setLoading(false);
+      }
     }
-  }, [origin, destination, transportMode, travelDate, arrivalTime, loadNearbySpots, loadNearbyStations]);
+  }, [origin, destination, transportMode, travelDate, arrivalTime, bufferMinutes, loadNearbySpots, loadNearbyStations]);
 
   // 初回マウント時に、保存済みの出発地・目的地で自動計算
   useEffect(() => {
@@ -722,10 +736,19 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // 電車モード時：日付・集合時刻・バッファ変更時にGoogle APIキーがあれば最新ダイヤで再計算
+  useEffect(() => {
+    if (transportMode === 'train' && routeResult?.destGeo && getSavedGoogleMapsApiKey()) {
+      calculateRoute(origin, destination, 'train');
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [travelDate, arrivalTime, bufferMinutes, transportMode]);
+
   const handleSelectPreset = (preset) => {
     setSelectedPresetId(preset.id);
     setDestination(preset.query);
     setManualDriveMinutes('');
+    setManualTransitMinutes('');
     calculateRoute(origin, preset.query);
   };
 
@@ -741,6 +764,7 @@ export default function App() {
       setArrivalTime(newTime);
     }
     setManualDriveMinutes('');
+    setManualTransitMinutes('');
     calculateRoute(origin, newDest || destination);
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
@@ -800,7 +824,11 @@ export default function App() {
   }, [travelDate, targetArrivalMinusBuffer]);
 
   // --- 🚗 車モードの逆算ロジック ---
-  const autoTraffic = getAutoTrafficInfo(travelDate, targetArrivalMinusBuffer.formatted);
+  const autoTraffic = getAutoTrafficInfo(
+    travelDate,
+    targetArrivalMinusBuffer.formatted,
+    routeResult?.baseDurationMinutes || 35
+  );
   const activeMultiplier = trafficMode === 'auto' ? autoTraffic.multiplier : Number(trafficMode);
 
   const parsedManualMinutes = parseInt(manualDriveMinutes, 10);
@@ -1018,7 +1046,7 @@ export default function App() {
                   type="button"
                   data-testid="mode-select-car"
                   onClick={() => setTransportMode('car')}
-                  className={`flex-1 py-2.5 px-3 rounded-xl font-black text-xs flex items-center justify-center gap-1.5 transition active:scale-98 ${
+                  className={`flex-1 py-2.5 px-3 rounded-xl font-black text-xs flex items-center justify-center gap-1.5 transition active:scale-95 ${
                     !isTrainMode
                       ? 'bg-emerald-700 text-white shadow-md'
                       : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
@@ -1031,7 +1059,7 @@ export default function App() {
                   type="button"
                   data-testid="mode-select-train"
                   onClick={() => setTransportMode('train')}
-                  className={`flex-1 py-2.5 px-3 rounded-xl font-black text-xs flex items-center justify-center gap-1.5 transition active:scale-98 ${
+                  className={`flex-1 py-2.5 px-3 rounded-xl font-black text-xs flex items-center justify-center gap-1.5 transition active:scale-95 ${
                     isTrainMode
                       ? 'bg-indigo-600 text-white shadow-md'
                       : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
@@ -1087,6 +1115,7 @@ export default function App() {
                     <button
                       type="button"
                       onClick={() => {
+                        routeRequestIdRef.current += 1;
                         setLoading(false);
                         setError('計算を一時停止しました。「再計算」ボタンで再試行できます。');
                       }}
@@ -1388,6 +1417,7 @@ export default function App() {
                       setDestination(item.fullQuery);
                       setSelectedPresetId(null);
                       setManualDriveMinutes('');
+                      setManualTransitMinutes('');
                       calculateRoute(origin, item.fullQuery);
                     }}
                     placeholder="会場名・公園名・学校名を入力（例: 西武台第2グラウンド、埼スタ）"
@@ -1409,9 +1439,10 @@ export default function App() {
                               setDestination(c.name);
                               setSelectedPresetId(null);
                               setManualDriveMinutes('');
+                              setManualTransitMinutes('');
                               calculateRoute(origin, c.name);
                             }}
-                            className="text-xs bg-white hover:bg-emerald-100 text-slate-800 font-bold px-2.5 py-1.5 rounded-xl border border-emerald-300 shadow-xs transition active:scale-95 text-left"
+                            className="text-xs bg-white hover:bg-emerald-100 text-slate-800 font-bold px-2.5 py-1.5 rounded-xl border border-emerald-300 shadow-sm transition active:scale-95 text-left"
                           >
                             {c.name}
                           </button>
@@ -1485,21 +1516,44 @@ export default function App() {
                     </form>
                   )}
 
-                  <div className="flex items-center gap-1.5 overflow-x-auto pb-1 scrollbar-none">
+                  <div
+                    className="flex items-center gap-1.5 overflow-x-auto pb-1"
+                    style={{ scrollbarWidth: 'none' }}
+                  >
                     {presets.map((p) => {
                       const isSelected = selectedPresetId === p.id || destination === p.query;
                       return (
-                        <div key={p.id} className="relative group shrink-0">
+                        <div key={p.id} className="relative group shrink-0 flex items-center">
                           <button
                             type="button"
                             onClick={() => handleSelectPreset(p)}
-                            className={`px-3 py-1.5 rounded-xl text-xs font-extrabold whitespace-nowrap transition border active:scale-95 ${
+                            className={`pl-3 pr-2 py-1.5 rounded-xl text-xs font-extrabold whitespace-nowrap transition border active:scale-95 flex items-center gap-1.5 ${
                               isSelected
                                 ? 'bg-emerald-600 text-white border-emerald-600 shadow-sm'
                                 : 'bg-slate-100 text-slate-700 hover:bg-slate-200 border-slate-200'
                             }`}
                           >
-                            {p.name}
+                            <span>{p.name}</span>
+                            <span
+                              role="button"
+                              tabIndex={0}
+                              aria-label={`${p.name}を削除`}
+                              onClick={(e) => handleDeletePreset(p.id, e)}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter' || e.key === ' ') {
+                                  e.preventDefault();
+                                  handleDeletePreset(p.id, e);
+                                }
+                              }}
+                              className={`p-0.5 rounded-full transition ${
+                                isSelected
+                                  ? 'text-emerald-200 hover:text-white hover:bg-emerald-700/60'
+                                  : 'text-slate-400 hover:text-rose-600 hover:bg-rose-50'
+                              }`}
+                              title="この会場を削除"
+                            >
+                              <Trash2 className="w-3 h-3" />
+                            </span>
                           </button>
                         </div>
                       );
@@ -1520,7 +1574,7 @@ export default function App() {
                       type="date"
                       value={travelDate}
                       onChange={(e) => setTravelDate(e.target.value)}
-                      className="w-full bg-slate-100 border border-slate-300 text-slate-900 text-xs font-black rounded-xl p-2.5"
+                      className="w-full h-10 bg-slate-100 border border-slate-300 text-slate-900 text-xs font-bold rounded-xl px-2.5 py-2 focus:ring-2 focus:ring-emerald-500 focus:outline-none"
                     />
                   </div>
                   <div>
@@ -1532,7 +1586,7 @@ export default function App() {
                       type="time"
                       value={arrivalTime}
                       onChange={(e) => setArrivalTime(e.target.value)}
-                      className="w-full bg-slate-100 border border-slate-300 text-slate-900 text-base font-black rounded-xl p-2"
+                      className="w-full h-10 bg-slate-100 border border-slate-300 text-slate-900 text-xs font-bold rounded-xl px-2.5 py-2 focus:ring-2 focus:ring-emerald-500 focus:outline-none"
                     />
                   </div>
                 </div>
@@ -1548,7 +1602,7 @@ export default function App() {
                         onClick={() => setTravelDate(qd.dateStr)}
                         className={`px-2.5 py-1 rounded-xl text-[11px] font-extrabold transition ${
                           active
-                            ? 'bg-emerald-600 text-white shadow-xs'
+                            ? 'bg-emerald-600 text-white shadow-sm'
                             : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
                         }`}
                       >
@@ -1585,8 +1639,8 @@ export default function App() {
                           className={`py-1.5 rounded-lg text-[11px] font-bold border transition ${
                             active
                               ? isTrainMode
-                                ? 'bg-indigo-600 text-white border-indigo-600 shadow-xs'
-                                : 'bg-emerald-600 text-white border-emerald-600 shadow-xs'
+                                ? 'bg-indigo-600 text-white border-indigo-600 shadow-sm'
+                                : 'bg-emerald-600 text-white border-emerald-600 shadow-sm'
                               : 'bg-slate-50 text-slate-700 border-slate-200'
                           }`}
                         >
@@ -1664,7 +1718,7 @@ export default function App() {
                     <button
                       type="button"
                       onClick={() => setIsOriginEditing(!isOriginEditing)}
-                      className="ml-2 text-xs font-bold text-sky-700 hover:text-sky-900 bg-white px-2.5 py-1 rounded-xl border border-sky-200 shrink-0 flex items-center gap-1 shadow-2xs"
+                      className="ml-2 text-xs font-bold text-sky-700 hover:text-sky-900 bg-white px-2.5 py-1 rounded-xl border border-sky-200 shrink-0 flex items-center gap-1 shadow-sm"
                     >
                       <Edit2 className="w-3 h-3" />
                       <span>{isOriginEditing ? '閉じる' : '変更'}</span>
@@ -1747,7 +1801,7 @@ export default function App() {
                         className="bg-indigo-50/50 hover:bg-indigo-50 border border-indigo-200/80 rounded-2xl p-3 flex items-center justify-between gap-3 transition"
                       >
                         <div className="flex items-center gap-2.5 min-w-0">
-                          <div className="w-8 h-8 rounded-xl bg-indigo-600 text-white flex items-center justify-center font-black text-xs shrink-0 shadow-xs">
+                          <div className="w-8 h-8 rounded-xl bg-indigo-600 text-white flex items-center justify-center font-black text-xs shrink-0 shadow-sm">
                             🚉
                           </div>
                           <div className="min-w-0">
@@ -1766,7 +1820,7 @@ export default function App() {
                           )}&destination=${encodeURIComponent(station.name)}&travelmode=transit`}
                           target="_blank"
                           rel="noopener noreferrer"
-                          className="px-2.5 py-1.5 bg-white text-indigo-700 hover:bg-indigo-100 rounded-xl text-[11px] font-extrabold border border-indigo-200 shrink-0 flex items-center gap-1 shadow-2xs"
+                          className="px-2.5 py-1.5 bg-white text-indigo-700 hover:bg-indigo-100 rounded-xl text-[11px] font-extrabold border border-indigo-200 shrink-0 flex items-center gap-1 shadow-sm"
                         >
                           <span>乗換案内</span>
                           <ExternalLink className="w-3 h-3" />

@@ -78,9 +78,10 @@ export function loadGoogleMapsScript(apiKey) {
 
     const script = document.createElement('script');
     script.id = 'google-maps-sdk-script';
+    // Places API (New) をフル活用するため v=weekly を指定
     script.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(
       key
-    )}&libraries=places&language=ja&region=JP`;
+    )}&libraries=places&language=ja&region=JP&v=weekly`;
     script.async = true;
     script.defer = true;
 
@@ -112,7 +113,7 @@ export function loadGoogleMapsScript(apiKey) {
   return scriptLoadingPromise;
 }
 
-// ダミーコンテナ（PlacesService用）
+// ダミーコンテナ（旧PlacesService用フォールバック）
 let dummyPlacesService = null;
 function getPlacesService() {
   if (!dummyPlacesService && window.google?.maps?.places?.PlacesService) {
@@ -123,21 +124,82 @@ function getPlacesService() {
 }
 
 /**
- * Google Maps によるジオコーディング (厳格なタイムアウト＆エラーハンドリング)
+ * Places API (New): Place.searchByText による施設検索
+ */
+async function searchWithPlacesNew(query, maps) {
+  try {
+    if (typeof maps.importLibrary === 'function') {
+      const placesLib = await maps.importLibrary('places');
+      const PlaceClass = placesLib?.Place;
+      if (PlaceClass && typeof PlaceClass.searchByText === 'function') {
+        const response = await PlaceClass.searchByText({
+          textQuery: query,
+          fields: ['displayName', 'location', 'formattedAddress', 'id'],
+          language: 'ja',
+          region: 'jp',
+          maxResultCount: 5,
+        });
+
+        if (response?.places && Array.isArray(response.places) && response.places.length > 0) {
+          const first = response.places[0];
+          const lat =
+            typeof first.location?.lat === 'function' ? first.location.lat() : first.location?.lat;
+          const lon =
+            typeof first.location?.lng === 'function' ? first.location.lng() : first.location?.lng;
+
+          if (lat !== undefined && lon !== undefined) {
+            const candidates = response.places.slice(1, 4).map((p) => {
+              const pLat =
+                typeof p.location?.lat === 'function' ? p.location.lat() : p.location?.lat;
+              const pLon =
+                typeof p.location?.lng === 'function' ? p.location.lng() : p.location?.lng;
+              return {
+                name: p.displayName || p.formattedAddress || query,
+                lat: pLat,
+                lon: pLon,
+              };
+            });
+
+            return {
+              lat,
+              lon,
+              displayName: first.displayName || first.formattedAddress || query,
+              formattedAddress: first.formattedAddress || '',
+              candidates,
+              source: 'google-places-new',
+            };
+          }
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('Places API (New) searchByText fallback:', err);
+  }
+  return null;
+}
+
+/**
+ * Google Maps によるジオコーディング (Places API New ➔ 旧Places ➔ Geocoderの順でフォールバック)
  */
 export async function geocodeWithGoogleMaps(query, apiKey) {
   const maps = await loadGoogleMapsScript(apiKey);
   const trimmed = query.trim();
 
-  // 1. まず PlacesService の TextSearch で施設検索 (最大3秒タイムアウト)
-  const placesResult = await new Promise((resolve) => {
+  // 1. 【Places API (New)】を最優先実行！ (Google CloudでPlaces API (New)のみ有効な場合も一発動作)
+  const newPlacesResult = await searchWithPlacesNew(trimmed, maps);
+  if (newPlacesResult) {
+    return newPlacesResult;
+  }
+
+  // 2. 従来の PlacesService.textSearch (旧API有効時用フォールバック、最大2.5秒タイムアウト)
+  const legacyPlacesResult = await new Promise((resolve) => {
     let done = false;
     const timeout = setTimeout(() => {
       if (!done) {
         done = true;
         resolve(null);
       }
-    }, 3000);
+    }, 2500);
 
     try {
       const service = getPlacesService();
@@ -175,7 +237,7 @@ export async function geocodeWithGoogleMaps(query, apiKey) {
                 displayName: first.name || first.formatted_address || trimmed,
                 formattedAddress: first.formatted_address || '',
                 candidates,
-                source: 'google-places',
+                source: 'google-places-legacy',
               });
             }
           }
@@ -191,11 +253,11 @@ export async function geocodeWithGoogleMaps(query, apiKey) {
     }
   });
 
-  if (placesResult) {
-    return placesResult;
+  if (legacyPlacesResult) {
+    return legacyPlacesResult;
   }
 
-  // 2. Placesで見つからない場合は Geocoder でフォールバック (最大3秒タイムアウト)
+  // 3. Geocoder (Geocoding API) でフォールバック (最大2.5秒タイムアウト)
   return new Promise((resolve, reject) => {
     let done = false;
     const timeout = setTimeout(() => {
@@ -203,7 +265,7 @@ export async function geocodeWithGoogleMaps(query, apiKey) {
         done = true;
         reject(new Error('Google Mapsジオコーディングがタイムアウトしました。'));
       }
-    }, 3000);
+    }, 2500);
 
     try {
       const geocoder = new maps.Geocoder();
@@ -251,7 +313,47 @@ export async function geocodeWithGoogleMaps(query, apiKey) {
 }
 
 /**
- * Google Maps Autocomplete による入力サジェスト候補の取得 (タイムアウト付き)
+ * Places API (New): AutocompleteSuggestion による入力サジェスト候補の取得
+ */
+async function getSuggestionsWithPlacesNew(query, maps) {
+  try {
+    if (typeof maps.importLibrary === 'function') {
+      const placesLib = await maps.importLibrary('places');
+      const AutoClass = placesLib?.AutocompleteSuggestion;
+      if (AutoClass && typeof AutoClass.fetchAutocompleteSuggestions === 'function') {
+        const response = await AutoClass.fetchAutocompleteSuggestions({
+          input: query,
+          region: 'jp',
+        });
+
+        if (response?.suggestions && Array.isArray(response.suggestions) && response.suggestions.length > 0) {
+          return response.suggestions
+            .filter((s) => s.placePrediction)
+            .map((s) => {
+              const pred = s.placePrediction;
+              const title = pred.mainText?.toString() || pred.text?.toString() || query;
+              const subtitle = pred.secondaryText?.toString() || 'Google マップ登録施設';
+              const fullQuery = pred.text?.toString() || query;
+              return {
+                id: `gmap-${pred.placeId}`,
+                placeId: pred.placeId,
+                title,
+                subtitle,
+                fullQuery,
+                source: 'google-new',
+              };
+            });
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('Places API (New) Autocomplete fallback:', err);
+  }
+  return null;
+}
+
+/**
+ * Google Maps Autocomplete による入力サジェスト候補の取得 (New ➔ Legacyの順で試行)
  */
 let autocompleteService = null;
 export async function getGooglePlacePredictions(query, apiKey) {
@@ -260,6 +362,14 @@ export async function getGooglePlacePredictions(query, apiKey) {
 
   try {
     const maps = await loadGoogleMapsScript(apiKey);
+
+    // 1. 【Places API (New)】を最優先実行！
+    const newSuggestions = await getSuggestionsWithPlacesNew(trimmed, maps);
+    if (Array.isArray(newSuggestions) && newSuggestions.length > 0) {
+      return newSuggestions;
+    }
+
+    // 2. 従来の AutocompleteService (旧API有効時用フォールバック)
     if (!autocompleteService && maps.places?.AutocompleteService) {
       autocompleteService = new maps.places.AutocompleteService();
     }
@@ -285,17 +395,14 @@ export async function getGooglePlacePredictions(query, apiKey) {
           done = true;
           clearTimeout(timeout);
 
-          if (
-            status === maps.places.PlacesServiceStatus.OK &&
-            Array.isArray(predictions)
-          ) {
+          if (status === maps.places.PlacesServiceStatus.OK && Array.isArray(predictions)) {
             const list = predictions.map((p) => ({
               id: `gmap-${p.place_id}`,
               placeId: p.place_id,
               title: p.structured_formatting?.main_text || p.description,
               subtitle: p.structured_formatting?.secondary_text || 'Google マップ登録施設',
               fullQuery: p.description,
-              source: 'google',
+              source: 'google-legacy',
             }));
             resolve(list);
           } else {
@@ -310,10 +417,39 @@ export async function getGooglePlacePredictions(query, apiKey) {
 }
 
 /**
- * PlaceId から緯度経度を取得 (タイムアウト付き)
+ * PlaceId から緯度経度を取得 (New ➔ Legacyの順でフォールバック)
  */
 export async function getCoordsByPlaceId(placeId, apiKey) {
   const maps = await loadGoogleMapsScript(apiKey);
+
+  // 1. 【Places API (New)】Place クラスでの取得
+  try {
+    if (typeof maps.importLibrary === 'function') {
+      const placesLib = await maps.importLibrary('places');
+      const PlaceClass = placesLib?.Place;
+      if (PlaceClass) {
+        const place = new PlaceClass({ id: placeId });
+        await place.fetchFields({ fields: ['displayName', 'location', 'formattedAddress'] });
+        const lat =
+          typeof place.location?.lat === 'function' ? place.location.lat() : place.location?.lat;
+        const lon =
+          typeof place.location?.lng === 'function' ? place.location.lng() : place.location?.lng;
+
+        if (lat !== undefined && lon !== undefined) {
+          return {
+            lat,
+            lon,
+            displayName: place.displayName || place.formattedAddress,
+            formattedAddress: place.formattedAddress || '',
+          };
+        }
+      }
+    }
+  } catch (e) {
+    console.warn('Places API (New) Place.fetchFields fallback to legacy:', e);
+  }
+
+  // 2. 従来の PlacesService での取得フォールバック
   const service = getPlacesService();
   if (!service) throw new Error('PlacesServiceが利用できません');
 

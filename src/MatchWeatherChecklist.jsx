@@ -379,7 +379,7 @@ export default function MatchWeatherChecklist({
           onClick={() => setIsExpanded(!isExpanded)}
           className="flex items-center gap-2 text-left group"
         >
-          <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-sky-500 to-indigo-600 text-white flex items-center justify-center shadow-xs">
+          <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-sky-500 to-indigo-600 text-white flex items-center justify-center shadow-sm">
             <Sparkles className="w-4 h-4" />
           </div>
           <div>
@@ -398,6 +398,16 @@ export default function MatchWeatherChecklist({
         </button>
 
         <div className="flex items-center gap-1.5">
+          {checkedCount > 0 && (
+            <button
+              type="button"
+              onClick={() => setCheckedItems(new Set())}
+              className="text-[10px] text-slate-400 hover:text-rose-600 font-bold px-1.5 py-0.5 rounded transition"
+              title="チェックをすべてリセット"
+            >
+              リセット
+            </button>
+          )}
           <span className="text-xs font-black text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-xl">
             {checkedCount} / {totalItemsCount} 準備済
           </span>
@@ -440,7 +450,7 @@ export default function MatchWeatherChecklist({
                   <Sun className="w-6 h-6 text-amber-500" />
                 )}
                 <div>
-                  <div className="text-xs font-extrabold text-slate-900 flex items-center gap-1.5">
+                  <div className="text-xs font-extrabold text-slate-900 flex items-center gap-1.5 flex-wrap">
                     <span>
                       {weatherData
                         ? `${weatherData.date} の目的地天気: ${weatherData.label}`
@@ -451,12 +461,22 @@ export default function MatchWeatherChecklist({
                         (降水確率 {weatherData.precipProb}%)
                       </span>
                     )}
+                    {weatherData && !weatherData.isDateMatched && (
+                      <span className="text-[10px] font-bold text-amber-700 bg-amber-100 px-1.5 py-0.2 rounded">
+                        ※直近参考
+                      </span>
+                    )}
                   </div>
                   {weatherData && (
                     <div className="text-[11px] font-bold text-slate-600 flex items-center gap-2 mt-0.5">
                       <span className="text-rose-600">最高 {weatherData.tempMax}℃</span>
                       <span className="text-slate-300">|</span>
                       <span className="text-sky-600">最低 {weatherData.tempMin}℃</span>
+                      {!weatherData.isDateMatched && (
+                        <span className="text-[10px] text-slate-400 font-normal">
+                          (7日以上先のため本日の参考値)
+                        </span>
+                      )}
                     </div>
                   )}
                 </div>
@@ -464,7 +484,7 @@ export default function MatchWeatherChecklist({
 
               {weatherData && (
                 <div className="text-right">
-                  <span className="inline-block text-[11px] font-black px-2.5 py-1 rounded-xl bg-white border border-slate-200 text-slate-700 shadow-2xs">
+                  <span className="inline-block text-[11px] font-black px-2.5 py-1 rounded-xl bg-white border border-slate-200 text-slate-700 shadow-sm">
                     {weatherData.tempMax >= 25 ? '☀️ 夏日注意' : weatherData.tempMin <= 12 ? '❄️ 防寒必須' : '🌤️ 快適'}
                   </span>
                 </div>
@@ -519,7 +539,7 @@ export default function MatchWeatherChecklist({
                   onClick={() => setUniformMode((prev) => ({ ...prev, type: opt.type }))}
                   className={`py-1.5 px-2 rounded-xl text-xs font-black transition border text-center ${
                     uniformMode.type === opt.type
-                      ? 'bg-indigo-600 text-white border-indigo-600 shadow-xs'
+                      ? 'bg-indigo-600 text-white border-indigo-600 shadow-sm'
                       : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-100'
                   }`}
                 >
@@ -626,7 +646,8 @@ export default function MatchWeatherChecklist({
             />
             <button
               type="submit"
-              className="bg-sky-600 hover:bg-sky-500 active:scale-95 text-white text-xs font-extrabold px-3 py-2 rounded-xl shadow-xs flex items-center gap-1 transition"
+              disabled={!newCustomText.trim()}
+              className="bg-sky-600 hover:bg-sky-500 active:scale-95 disabled:opacity-50 text-white text-xs font-extrabold px-3 py-2 rounded-xl shadow-sm flex items-center gap-1 transition"
             >
               <Plus className="w-4 h-4" />
               <span>追加</span>

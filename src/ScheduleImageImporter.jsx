@@ -36,7 +36,9 @@ const MEETING_PRESETS = [
 export default function ScheduleImageImporter({ onApplySchedule }) {
   const [isOpen, setIsOpen] = useState(false);
   const [apiKey, setApiKey] = useState(() => {
-    return localStorage.getItem(GEMINI_API_KEY_STORAGE) || '';
+    const envKey = import.meta.env?.VITE_GEMINI_API_KEY || '';
+    const saved = localStorage.getItem(GEMINI_API_KEY_STORAGE) || '';
+    return saved.trim() || envKey.trim();
   });
   const [showKeyInput, setShowKeyInput] = useState(false);
   const [tempApiKey, setTempApiKey] = useState('');

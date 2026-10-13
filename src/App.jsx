@@ -1580,7 +1580,7 @@ export default function App() {
                         type="date"
                         value={travelDate}
                         onChange={(e) => setTravelDate(e.target.value)}
-                        className="w-full min-w-0 max-w-full h-11 bg-slate-50 hover:bg-slate-100 border border-slate-300 text-slate-900 text-xs sm:text-sm font-bold rounded-xl px-2 py-2 text-center focus:ring-2 focus:ring-emerald-500 focus:outline-none transition box-border"
+                        className="w-full min-w-0 max-w-full h-11 bg-slate-50 hover:bg-slate-100 border border-slate-300 text-slate-900 text-sm font-bold rounded-xl px-2 py-0 text-center flex items-center justify-center leading-none focus:ring-2 focus:ring-emerald-500 focus:outline-none transition box-border"
                       />
                     </div>
 
@@ -1598,7 +1598,7 @@ export default function App() {
                         type="time"
                         value={arrivalTime}
                         onChange={(e) => setArrivalTime(e.target.value)}
-                        className="w-full min-w-0 max-w-full h-11 bg-slate-50 hover:bg-slate-100 border border-slate-300 text-slate-900 text-xs sm:text-sm font-bold rounded-xl px-2 py-2 text-center focus:ring-2 focus:ring-emerald-500 focus:outline-none transition box-border"
+                        className="w-full min-w-0 max-w-full h-11 bg-slate-50 hover:bg-slate-100 border border-slate-300 text-slate-900 text-sm font-bold rounded-xl px-2 py-0 text-center flex items-center justify-center leading-none focus:ring-2 focus:ring-emerald-500 focus:outline-none transition box-border"
                       />
                     </div>
                   </div>

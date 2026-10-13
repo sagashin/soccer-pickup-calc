@@ -1563,55 +1563,62 @@ export default function App() {
 
                 <hr className="border-slate-100" />
 
-                {/* 移動日 & 集合時刻（スマホで重ならないレスポンシブ配置） */}
-                <div className="space-y-3">
-                  <div>
-                    <label htmlFor="travel-date-input" className="text-xs font-extrabold text-slate-700 mb-1.5 flex items-center gap-1">
-                      <Calendar className="w-3.5 h-3.5 text-emerald-600" />
-                      <span>移動日（試合日）</span>
-                    </label>
-                    <input
-                      id="travel-date-input"
-                      type="date"
-                      value={travelDate}
-                      onChange={(e) => setTravelDate(e.target.value)}
-                      className="w-full min-w-0 h-11 bg-slate-100 border border-slate-300 text-slate-900 text-sm font-bold rounded-xl px-3 py-2 focus:ring-2 focus:ring-emerald-500 focus:outline-none"
-                    />
+                {/* 移動日 & 集合時刻（スマホ最適化: コンパクト＆重なり・横はみ出し防止） */}
+                <div className="space-y-2">
+                  <div className="flex items-end gap-2.5">
+                    {/* 移動日入力 */}
+                    <div className="flex-1 min-w-0">
+                      <label htmlFor="travel-date-input" className="text-xs font-extrabold text-slate-700 mb-1 flex items-center gap-1 truncate">
+                        <Calendar className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                        <span>移動日（試合日）</span>
+                      </label>
+                      <input
+                        id="travel-date-input"
+                        type="date"
+                        value={travelDate}
+                        onChange={(e) => setTravelDate(e.target.value)}
+                        className="w-full min-w-0 max-w-full h-10 bg-slate-100 border border-slate-300 text-slate-900 text-xs font-bold rounded-xl px-2.5 py-1.5 focus:ring-2 focus:ring-emerald-500 focus:outline-none box-border"
+                      />
+                    </div>
 
-                    {/* クイック日付ボタン */}
-                    <div className="flex flex-wrap items-center gap-1.5 mt-2">
-                      {quickDates.map((qd) => {
-                        const active = travelDate === qd.dateStr;
-                        return (
-                          <button
-                            key={qd.id}
-                            type="button"
-                            onClick={() => setTravelDate(qd.dateStr)}
-                            className={`px-2.5 py-1 rounded-xl text-[11px] font-extrabold transition active:scale-95 ${
-                              active
-                                ? 'bg-emerald-600 text-white shadow-sm'
-                                : 'bg-slate-100 text-slate-600 hover:bg-slate-200 border border-slate-200'
-                            }`}
-                          >
-                            {qd.label} ({qd.dayName})
-                          </button>
-                        );
-                      })}
+                    {/* 集合・到着時刻入力 (コンパクトな固定幅で横伸び＆重なりを防止) */}
+                    <div className="w-28 sm:w-32 shrink-0">
+                      <label htmlFor="arrival-time-input" className="text-xs font-extrabold text-slate-700 mb-1 flex items-center gap-1 truncate">
+                        <Clock className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                        <span>集合時刻</span>
+                      </label>
+                      <input
+                        id="arrival-time-input"
+                        type="time"
+                        value={arrivalTime}
+                        onChange={(e) => setArrivalTime(e.target.value)}
+                        className="w-full min-w-0 max-w-full h-10 bg-slate-100 border border-slate-300 text-slate-900 text-xs font-bold rounded-xl px-2 py-1.5 focus:ring-2 focus:ring-emerald-500 focus:outline-none box-border text-center"
+                      />
                     </div>
                   </div>
 
-                  <div>
-                    <label htmlFor="arrival-time-input" className="text-xs font-extrabold text-slate-700 mb-1.5 flex items-center gap-1">
-                      <Clock className="w-3.5 h-3.5 text-emerald-600" />
-                      <span>集合・到着時刻</span>
-                    </label>
-                    <input
-                      id="arrival-time-input"
-                      type="time"
-                      value={arrivalTime}
-                      onChange={(e) => setArrivalTime(e.target.value)}
-                      className="w-full min-w-0 h-11 bg-slate-100 border border-slate-300 text-slate-900 text-sm font-bold rounded-xl px-3 py-2 focus:ring-2 focus:ring-emerald-500 focus:outline-none"
-                    />
+                  {/* クイック日付ボタン（横スクロールで親枠のはみ出しを確実に防止） */}
+                  <div
+                    className="flex items-center gap-1.5 overflow-x-auto pb-0.5 pt-0.5"
+                    style={{ scrollbarWidth: 'none', WebkitOverflowScrolling: 'touch' }}
+                  >
+                    {quickDates.map((qd) => {
+                      const active = travelDate === qd.dateStr;
+                      return (
+                        <button
+                          key={qd.id}
+                          type="button"
+                          onClick={() => setTravelDate(qd.dateStr)}
+                          className={`px-2.5 py-1 rounded-xl text-[11px] font-extrabold whitespace-nowrap shrink-0 transition active:scale-95 ${
+                            active
+                              ? 'bg-emerald-600 text-white shadow-sm'
+                              : 'bg-slate-100 text-slate-600 hover:bg-slate-200 border border-slate-200'
+                          }`}
+                        >
+                          {qd.label} ({qd.dayName})
+                        </button>
+                      );
+                    })}
                   </div>
                 </div>
 

@@ -486,3 +486,105 @@ export async function getCoordsByPlaceId(placeId, apiKey) {
     );
   });
 }
+
+/**
+ * Google Maps DirectionsService による車ルート & 渋滞最大時間（PESSIMISTIC）自動取得
+ * - 指定の目標到着日時から仮の出発時間を算出して問い合わせ
+ * - Google公式の最悪渋滞想定（trafficModel: PESSIMISTIC）による所要時間を取得し真の出発時刻へ反復補正
+ */
+export async function fetchGoogleDrivingRouteWithTraffic({
+  origin,
+  destination,
+  arrivalDate,
+  apiKey,
+}) {
+  const maps = await loadGoogleMapsScript(apiKey);
+  if (!maps?.DirectionsService) {
+    throw new Error('DirectionsService が利用できません。');
+  }
+
+  const directionsService = new maps.DirectionsService();
+
+  // 目標到着時刻
+  const targetDate = arrivalDate instanceof Date ? arrivalDate : new Date(arrivalDate);
+  const now = new Date();
+
+  // 初期仮説: 目標到着時刻の約60分前を出発時間とする（未来日時でなければ現在+3分後に安全補正）
+  let depTime = new Date(targetDate.getTime() - 60 * 60 * 1000);
+  if (depTime.getTime() <= now.getTime()) {
+    depTime = new Date(now.getTime() + 3 * 60 * 1000);
+  }
+
+  const queryRoute = (departureDate) => {
+    return new Promise((resolve, reject) => {
+      const request = {
+        origin,
+        destination,
+        travelMode: maps.TravelMode.DRIVING,
+        drivingOptions: {
+          departureTime: departureDate,
+          trafficModel: maps.TrafficModel.PESSIMISTIC, // 最大渋滞・最悪想定！
+        },
+      };
+
+      directionsService.route(request, (result, status) => {
+        if (status === maps.DirectionsStatus.OK && result?.routes?.[0]?.legs?.[0]) {
+          const leg = result.routes[0].legs[0];
+          const normalSec = leg.duration?.value || 0;
+          const trafficSec = leg.duration_in_traffic?.value || normalSec;
+          const distanceMeters = leg.distance?.value || 0;
+
+          const points = (result.routes[0].overview_path || []).map((latLng) => [
+            latLng.lat(),
+            latLng.lng(),
+          ]);
+
+          resolve({
+            minMinutes: Math.max(1, Math.round(normalSec / 60)),
+            maxMinutes: Math.max(1, Math.round(trafficSec / 60)),
+            distanceKm: (distanceMeters / 1000).toFixed(1),
+            geometry:
+              points.length > 0
+                ? {
+                    type: 'LineString',
+                    coordinates: points.map(([lat, lng]) => [lng, lat]),
+                  }
+                : null,
+            summary: result.routes[0].summary || '',
+          });
+        } else {
+          reject(new Error(`Google Directions 車ルート取得失敗: ${status}`));
+        }
+      });
+    });
+  };
+
+  // 1回目のクエリ（仮の出発時刻）
+  const firstPass = await queryRoute(depTime);
+
+  // 反復補正: 初回の最大時間と仮定（60分）の差が15分以上あり、未来日時の場合、
+  // その最大時間に合わせて正確な出発時刻で再クエリ
+  const diffMinutes = Math.abs(firstPass.maxMinutes - 60);
+  if (diffMinutes >= 15 && targetDate.getTime() > now.getTime()) {
+    const refinedDepTime = new Date(targetDate.getTime() - firstPass.maxMinutes * 60 * 1000);
+    if (refinedDepTime.getTime() > now.getTime()) {
+      try {
+        const secondPass = await queryRoute(refinedDepTime);
+        return {
+          ...secondPass,
+          standardMinutes: Math.round((secondPass.minMinutes + secondPass.maxMinutes) / 2),
+          isGoogleRealtime: true,
+        };
+      } catch (e) {
+        // 再クエリ失敗時は初回の結果を採用
+      }
+    }
+  }
+
+  return {
+    ...firstPass,
+    standardMinutes: Math.round((firstPass.minMinutes + firstPass.maxMinutes) / 2),
+    isGoogleRealtime: true,
+  };
+}
+

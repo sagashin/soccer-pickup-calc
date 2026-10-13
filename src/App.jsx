@@ -30,7 +30,11 @@ import ScheduleImageImporter from './ScheduleImageImporter';
 import MatchWeatherChecklist from './MatchWeatherChecklist';
 import GoogleMapsKeyModal from './GoogleMapsKeyModal';
 import { fetchNearbySpots } from './nearbySpots';
-import { getSavedGoogleMapsApiKey, geocodeWithGoogleMaps } from './googleMapsClient';
+import {
+  getSavedGoogleMapsApiKey,
+  geocodeWithGoogleMaps,
+  fetchGoogleDrivingRouteWithTraffic,
+} from './googleMapsClient';
 import {
   fetchGoogleTransitRoute,
   fetchNearbyStations,
@@ -763,47 +767,79 @@ export default function App() {
       loadNearbySpots(destGeo, d);
       loadNearbyStations(destGeo);
 
-      // 車ルート計算 (OSRM)
+      // 車ルート計算 (OSRM標準ルートを並行準備)
       const osrmPromise = fetchOsrmRoute(originGeo, destGeo);
 
-      // 電車ルート計算 (Google Directions Transit、APIキーがあれば実行)
+      // Google Maps APIキーがある場合の処理 (車: 渋滞予測 / 電車: ダイヤ検索)
       const gKey = getSavedGoogleMapsApiKey();
       let transitData = null;
+      let googleDriveData = null;
+
       if (gKey) {
-        try {
-          // 集合時刻ではなく、目標到着時刻（集合時刻 - バッファ分前）で正確な電車ダイヤを検索
-          const targetArr = subtractMinutesFromTime(arrivalTime, bufferMinutes);
-          const [y, m, day] = travelDate.split('-').map(Number);
-          const arrDate = new Date(
-            y,
-            (m || 1) - 1,
-            day || 1,
-            targetArr.hours,
-            targetArr.minutes,
-            0
-          );
-          transitData = await fetchGoogleTransitRoute({
-            origin: o,
-            destination: d,
-            arrivalDate: arrDate,
-            apiKey: gKey,
-          });
-        } catch (tErr) {
+        // 集合時刻ではなく、目標到着時刻（集合時刻 - バッファ分前）を基準に逆算
+        const targetArr = subtractMinutesFromTime(arrivalTime, bufferMinutes);
+        const [y, m, day] = travelDate.split('-').map(Number);
+        const arrDate = new Date(
+          y,
+          (m || 1) - 1,
+          day || 1,
+          targetArr.hours,
+          targetArr.minutes,
+          0
+        );
+
+        // 🚗 車ルート: Google Directions API による最悪渋滞想定 (PESSIMISTIC) の自動逆算取得
+        const drivePromise = fetchGoogleDrivingRouteWithTraffic({
+          origin: o,
+          destination: d,
+          arrivalDate: arrDate,
+          apiKey: gKey,
+        }).catch((gDriveErr) => {
+          console.warn('Google Driving Traffic API error or fallback to OSRM:', gDriveErr);
+          return null;
+        });
+
+        // 🚃 電車ルート: Google Transit ダイヤ取得
+        const transitPromise = fetchGoogleTransitRoute({
+          origin: o,
+          destination: d,
+          arrivalDate: arrDate,
+          apiKey: gKey,
+        }).catch((tErr) => {
           console.warn('Google Transit API error or fallback:', tErr);
-        }
+          return null;
+        });
+
+        [googleDriveData, transitData] = await Promise.all([drivePromise, transitPromise]);
       }
 
       const osrm = await osrmPromise;
       if (isStale()) return;
 
-      setRouteResult({
-        originGeo,
-        destGeo,
-        baseDurationMinutes: Math.max(1, Math.round(osrm.durationSeconds / 60)),
-        distanceKm: (osrm.distanceMeters / 1000).toFixed(1),
-        geometry: osrm.geometry,
-        calculatedAt: new Date().toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' }),
-      });
+      if (googleDriveData) {
+        // Google Maps 公式の渋滞予測データ（通常時間・最大渋滞時間）を反映
+        setRouteResult({
+          originGeo,
+          destGeo,
+          baseDurationMinutes: googleDriveData.minMinutes,
+          maxDurationMinutes: googleDriveData.maxMinutes,
+          distanceKm: googleDriveData.distanceKm,
+          geometry: googleDriveData.geometry || osrm.geometry,
+          isGoogleRealtime: true,
+          calculatedAt: new Date().toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' }),
+        });
+      } else {
+        // フリー地図（OSRM + 統計渋滞モデル）でフォールバック
+        setRouteResult({
+          originGeo,
+          destGeo,
+          baseDurationMinutes: Math.max(1, Math.round(osrm.durationSeconds / 60)),
+          distanceKm: (osrm.distanceMeters / 1000).toFixed(1),
+          geometry: osrm.geometry,
+          isGoogleRealtime: false,
+          calculatedAt: new Date().toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' }),
+        });
+      }
 
       if (transitData) {
         setTransitResult({
@@ -941,7 +977,7 @@ export default function App() {
   const parsedManualMinutes = parseInt(manualDriveMinutes, 10);
   const hasManualOverride = !Number.isNaN(parsedManualMinutes) && parsedManualMinutes > 0;
 
-  // Googleマップ風の「通常〜最大」所要時間レンジ（統計渋滞モデル）
+  // Googleマップ風の「通常〜最大」所要時間レンジ（Google公式予測または統計モデル）
   const driveRange = useMemo(() => {
     if (!routeResult?.baseDurationMinutes) return null;
     const baseM = routeResult.baseDurationMinutes;
@@ -953,6 +989,18 @@ export default function App() {
         situation: 'Googleマップ確認時間（手動入力）',
         formattedRange: formatMinutesLabel(parsedManualMinutes),
         formattedShort: formatMinutesLabel(parsedManualMinutes),
+      };
+    }
+    // Google Maps APIキーがあり、Google Directions APIから最大渋滞予測が直接取得できている場合
+    if (routeResult.isGoogleRealtime && routeResult.maxDurationMinutes) {
+      return {
+        minMinutes: routeResult.baseDurationMinutes,
+        maxMinutes: routeResult.maxDurationMinutes,
+        standardMinutes: Math.round((routeResult.baseDurationMinutes + routeResult.maxDurationMinutes) / 2),
+        situation: 'Googleマップ公式渋滞予測（PESSIMISTIC最大時間）',
+        formattedRange: formatDurationRange(routeResult.baseDurationMinutes, routeResult.maxDurationMinutes),
+        formattedShort: formatMinutesRangeShort(routeResult.baseDurationMinutes, routeResult.maxDurationMinutes),
+        isGoogleRealtime: true,
       };
     }
     return calculateDriveDurationRange(
@@ -1339,7 +1387,7 @@ export default function App() {
                           </div>
                         </div>
                         <span className="text-[10px] px-2 py-0.5 rounded-md font-bold bg-amber-400 text-slate-950 shrink-0 whitespace-nowrap shadow-xs">
-                          最大時間想定
+                          {driveRange.isGoogleRealtime ? 'Google公式・最大渋滞想定' : '最大時間想定'}
                         </span>
                       </div>
                     )}

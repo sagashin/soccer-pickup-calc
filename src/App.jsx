@@ -178,53 +178,53 @@ function calculateDriveDurationRange(baseMinutes, dateStr, timeStr) {
   const hour = ((midMinutes / 60) + 24) % 24;
 
   let minMultiplier = 1.0;
-  let maxMultiplier = 1.25;
+  let maxMultiplier = 1.35;
   let situation = '通常のスムーズな交通量';
 
   if (isWeekend) {
     if (hour >= 7 && hour <= 11) {
-      // 週末の朝: レジャー・遠征・行楽ラッシュ
-      minMultiplier = 1.05;
-      maxMultiplier = 1.45;
+      // 週末の朝: レジャー・遠征・行楽ラッシュ（最大1.65〜1.75倍）
+      minMultiplier = 1.0;
+      maxMultiplier = 1.72;
       situation = `${WEEKDAYS_JA[day]}曜・朝の遠征・お出かけ混雑ピーク`;
     } else if (hour >= 15.5 && hour <= 19.5) {
       // 週末の夕方: 帰宅ラッシュ
-      minMultiplier = 1.1;
-      maxMultiplier = 1.5;
+      minMultiplier = 1.05;
+      maxMultiplier = 1.75;
       situation = `${WEEKDAYS_JA[day]}曜・夕方の帰宅混雑ピーク`;
     } else if (hour > 11 && hour < 15.5) {
       minMultiplier = 1.0;
-      maxMultiplier = 1.3;
+      maxMultiplier = 1.45;
       situation = `${WEEKDAYS_JA[day]}曜・日中のお出かけ交通量`;
     } else {
       minMultiplier = 1.0;
-      maxMultiplier = 1.15;
+      maxMultiplier = 1.25;
       situation = `${WEEKDAYS_JA[day]}曜・早朝/夜間（スムーズ）`;
     }
   } else {
     if (hour >= 7 && hour <= 9.5) {
-      // 平日朝: 通勤・通学・物流ラッシュ
-      minMultiplier = 1.1;
-      maxMultiplier = 1.45;
+      // 平日朝: 通勤・通学・物流ラッシュ（最大1.70倍）
+      minMultiplier = 1.0;
+      maxMultiplier = 1.72;
       situation = `平日 (${WEEKDAYS_JA[day]})・朝の通勤混雑ピーク`;
     } else if (hour >= 16.5 && hour <= 19.5) {
       // 平日夕方: 送迎・帰宅混雑
-      minMultiplier = 1.1;
-      maxMultiplier = 1.45;
+      minMultiplier = 1.05;
+      maxMultiplier = 1.70;
       situation = `平日 (${WEEKDAYS_JA[day]})・夕方の送迎・帰宅混雑ピーク`;
     } else if (hour > 9.5 && hour < 16.5) {
       minMultiplier = 1.0;
-      maxMultiplier = 1.25;
+      maxMultiplier = 1.38;
       situation = `平日 (${WEEKDAYS_JA[day]})・日中通常交通量`;
     } else {
       minMultiplier = 1.0;
-      maxMultiplier = 1.15;
+      maxMultiplier = 1.25;
       situation = `平日 (${WEEKDAYS_JA[day]})・早朝/夜間（スムーズ）`;
     }
   }
 
   const minM = Math.max(1, Math.round(baseMinutes * minMultiplier));
-  const maxM = Math.max(minM + (baseMinutes >= 30 ? 10 : 5), Math.round(baseMinutes * maxMultiplier));
+  const maxM = Math.max(minM + (baseMinutes >= 20 ? 10 : 5), Math.round(baseMinutes * maxMultiplier));
   const standardM = Math.round((minM + maxM) / 2);
 
   return {
@@ -467,8 +467,18 @@ async function fetchOsrmRoute(originCoords, destCoords) {
       const data = await res.json();
       if (data.code === 'Ok' && Array.isArray(data.routes) && data.routes.length > 0) {
         const route = data.routes[0];
+        // OSRMの生durationは信号のない理想最高速基準。
+        // 日本の市街地・一般道は信号待ち（約400〜500m毎）や右折待ちがあるため、
+        // 実効平均速度は時速約20〜28km/h（OSRM理論値の約1.35〜1.45倍の時間）となる。
+        const distanceKm = route.distance / 1000;
+        const rawSpeedKmh = route.duration > 0 ? distanceKm / (route.duration / 3600) : 30;
+        // 高速道路区間（時速70km以上）は1.12倍、郊外幹線道（45〜70km）は1.28倍、市街地一般道は1.42倍
+        const japanRealTrafficFactor =
+          rawSpeedKmh >= 70 ? 1.12 : rawSpeedKmh >= 45 ? 1.28 : 1.42;
+        const adjustedSeconds = Math.round(route.duration * japanRealTrafficFactor);
+
         return {
-          durationSeconds: route.duration,
+          durationSeconds: adjustedSeconds,
           distanceMeters: route.distance,
           geometry: route.geometry,
         };
@@ -792,6 +802,8 @@ export default function App() {
         const drivePromise = fetchGoogleDrivingRouteWithTraffic({
           origin: o,
           destination: d,
+          originCoords: originGeo?.lat && originGeo?.lon ? { lat: originGeo.lat, lon: originGeo.lon } : null,
+          destCoords: destGeo?.lat && destGeo?.lon ? { lat: destGeo.lat, lon: destGeo.lon } : null,
           arrivalDate: arrDate,
           apiKey: gKey,
         }).catch((gDriveErr) => {

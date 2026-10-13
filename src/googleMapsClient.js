@@ -495,6 +495,8 @@ export async function getCoordsByPlaceId(placeId, apiKey) {
 export async function fetchGoogleDrivingRouteWithTraffic({
   origin,
   destination,
+  originCoords,
+  destCoords,
   arrivalDate,
   apiKey,
 }) {
@@ -515,11 +517,22 @@ export async function fetchGoogleDrivingRouteWithTraffic({
     depTime = new Date(now.getTime() + 3 * 60 * 1000);
   }
 
+  // 座標がある場合は google.maps.LatLng を使用（住所文字列解決の失敗・クォータ制限を完全回避）
+  const originParam =
+    originCoords?.lat && originCoords?.lon
+      ? new maps.LatLng(originCoords.lat, originCoords.lon)
+      : origin;
+
+  const destParam =
+    destCoords?.lat && destCoords?.lon
+      ? new maps.LatLng(destCoords.lat, destCoords.lon)
+      : destination;
+
   const queryRoute = (departureDate) => {
     return new Promise((resolve, reject) => {
       const request = {
-        origin,
-        destination,
+        origin: originParam,
+        destination: destParam,
         travelMode: maps.TravelMode.DRIVING,
         drivingOptions: {
           departureTime: departureDate,

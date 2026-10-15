@@ -675,6 +675,19 @@ export default function App() {
     }
   }, []);
 
+  // タブ切り替え時は常に確実に画面最上部（ヘッダー・出発カード）へスクロール
+  useEffect(() => {
+    window.scrollTo(0, 0);
+    document.documentElement.scrollTop = 0;
+    document.body.scrollTop = 0;
+    const raf = requestAnimationFrame(() => {
+      window.scrollTo(0, 0);
+      document.documentElement.scrollTop = 0;
+      document.body.scrollTop = 0;
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [activeTab]);
+
   // 日付・時刻ピッカー用のRefとハンドラー (起動直後でも確実にピッカーを起動)
   const dateInputRef = useRef(null);
   const timeInputRef = useRef(null);
@@ -998,7 +1011,18 @@ export default function App() {
       setManualTransitMinutes('');
       setActiveTab('calc');
       calculateRoute(origin, sched.venue || destination);
-      window.scrollTo({ top: 0, behavior: 'smooth' });
+
+      // 即時スクロール＋DOM更新後の遅延スクロールで確実に最上部（ヘッダー・出発カード）に着地
+      window.scrollTo(0, 0);
+      document.documentElement.scrollTop = 0;
+      document.body.scrollTop = 0;
+      requestAnimationFrame(() => {
+        window.scrollTo(0, 0);
+        setTimeout(() => {
+          window.scrollTo(0, 0);
+          document.documentElement.scrollTop = 0;
+        }, 80);
+      });
     },
     [origin, destination, calculateRoute]
   );

@@ -644,6 +644,34 @@ export default function App() {
 
   // UIタブ切り替え ('calc' | 'spots' | 'checklist')
   const [activeTab, setActiveTab] = useState('calc');
+
+  // 日付・時刻ピッカー用のRefとハンドラー (起動直後でも確実にピッカーを起動)
+  const dateInputRef = useRef(null);
+  const timeInputRef = useRef(null);
+
+  const handleOpenDatePicker = useCallback(() => {
+    try {
+      if (dateInputRef.current && typeof dateInputRef.current.showPicker === 'function') {
+        dateInputRef.current.showPicker();
+      } else {
+        dateInputRef.current?.focus();
+      }
+    } catch (_) {
+      dateInputRef.current?.focus();
+    }
+  }, []);
+
+  const handleOpenTimePicker = useCallback(() => {
+    try {
+      if (timeInputRef.current && typeof timeInputRef.current.showPicker === 'function') {
+        timeInputRef.current.showPicker();
+      } else {
+        timeInputRef.current?.focus();
+      }
+    } catch (_) {
+      timeInputRef.current?.focus();
+    }
+  }, []);
   // 自宅住所のインライン編集展開ステート
   const [isOriginEditing, setIsOriginEditing] = useState(false);
 
@@ -1815,36 +1843,64 @@ export default function App() {
                     <div className="min-w-0 overflow-hidden">
                       <label
                         htmlFor="travel-date-input"
-                        className="text-xs font-extrabold text-slate-700 mb-1.5 flex items-center gap-1 truncate"
+                        onClick={handleOpenDatePicker}
+                        className="text-xs font-extrabold text-slate-700 mb-1.5 flex items-center gap-1 truncate cursor-pointer hover:text-emerald-700 transition"
                       >
                         <Calendar className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
                         <span className="truncate">移動日（試合日）</span>
                       </label>
-                      <input
-                        id="travel-date-input"
-                        type="date"
-                        value={travelDate}
-                        onChange={(e) => setTravelDate(e.target.value)}
-                        className="w-full min-w-0 max-w-full h-11 bg-slate-50 hover:bg-slate-100 border border-slate-300 text-slate-900 text-sm font-bold rounded-xl px-2 py-0 text-center flex items-center justify-center leading-none focus:ring-2 focus:ring-emerald-500 focus:outline-none transition box-border"
-                      />
+                      <div className="relative flex items-center">
+                        <input
+                          ref={dateInputRef}
+                          id="travel-date-input"
+                          type="date"
+                          value={travelDate}
+                          onClick={handleOpenDatePicker}
+                          onChange={(e) => setTravelDate(e.target.value)}
+                          className="w-full min-w-0 max-w-full h-11 bg-slate-50 hover:bg-slate-100 border border-slate-300 text-slate-900 text-sm font-bold rounded-xl pl-2 pr-8 py-0 text-center flex items-center justify-center leading-none focus:ring-2 focus:ring-emerald-500 focus:outline-none transition box-border cursor-pointer"
+                        />
+                        <button
+                          type="button"
+                          onClick={handleOpenDatePicker}
+                          className="absolute right-1.5 top-1/2 -translate-y-1/2 w-7 h-7 flex items-center justify-center rounded-lg text-slate-400 hover:text-emerald-600 hover:bg-slate-200/60 active:scale-95 transition z-10"
+                          aria-label="カレンダーを開く"
+                          title="日付を選択"
+                        >
+                          <Calendar className="w-4 h-4" />
+                        </button>
+                      </div>
                     </div>
 
                     {/* 集合・到着時刻入力 */}
                     <div className="min-w-0 overflow-hidden">
                       <label
                         htmlFor="arrival-time-input"
-                        className="text-xs font-extrabold text-slate-700 mb-1.5 flex items-center gap-1 truncate"
+                        onClick={handleOpenTimePicker}
+                        className="text-xs font-extrabold text-slate-700 mb-1.5 flex items-center gap-1 truncate cursor-pointer hover:text-emerald-700 transition"
                       >
                         <Clock className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
                         <span className="truncate">集合・到着時刻</span>
                       </label>
-                      <input
-                        id="arrival-time-input"
-                        type="time"
-                        value={arrivalTime}
-                        onChange={(e) => setArrivalTime(e.target.value)}
-                        className="w-full min-w-0 max-w-full h-11 bg-slate-50 hover:bg-slate-100 border border-slate-300 text-slate-900 text-sm font-bold rounded-xl px-2 py-0 text-center flex items-center justify-center leading-none focus:ring-2 focus:ring-emerald-500 focus:outline-none transition box-border"
-                      />
+                      <div className="relative flex items-center">
+                        <input
+                          ref={timeInputRef}
+                          id="arrival-time-input"
+                          type="time"
+                          value={arrivalTime}
+                          onClick={handleOpenTimePicker}
+                          onChange={(e) => setArrivalTime(e.target.value)}
+                          className="w-full min-w-0 max-w-full h-11 bg-slate-50 hover:bg-slate-100 border border-slate-300 text-slate-900 text-sm font-bold rounded-xl pl-2 pr-8 py-0 text-center flex items-center justify-center leading-none focus:ring-2 focus:ring-emerald-500 focus:outline-none transition box-border cursor-pointer"
+                        />
+                        <button
+                          type="button"
+                          onClick={handleOpenTimePicker}
+                          className="absolute right-1.5 top-1/2 -translate-y-1/2 w-7 h-7 flex items-center justify-center rounded-lg text-slate-400 hover:text-emerald-600 hover:bg-slate-200/60 active:scale-95 transition z-10"
+                          aria-label="時計ピッカーを開く"
+                          title="時刻を選択"
+                        >
+                          <Clock className="w-4 h-4" />
+                        </button>
+                      </div>
                     </div>
                   </div>
 

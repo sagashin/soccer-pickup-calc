@@ -47,7 +47,7 @@ input[type="time"]::-webkit-date-and-time-value {
   line-height: 1;
 }
 
-/* カレンダー/時計ピッカーアイコンを全画面透明オーバーレイにして、右寄せによる文字の左ズレを完全に防ぐ */
+/* カレンダー/時計ピッカーアイコンを透明にしつつ全面タップ可能にし、左右中央揃えを維持 */
 input[type="date"]::-webkit-calendar-picker-indicator,
 input[type="time"]::-webkit-calendar-picker-indicator {
   position: absolute;
@@ -61,6 +61,7 @@ input[type="time"]::-webkit-calendar-picker-indicator {
   cursor: pointer;
   margin: 0;
   padding: 0;
+  pointer-events: auto;
 }
 
 /* 余計なスピンボタンや余白の干渉を排除 */

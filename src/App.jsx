@@ -16,6 +16,7 @@ import {
   RotateCcw,
   Calendar,
   CalendarCheck,
+  Camera,
   ExternalLink,
   ChevronRight,
   ChevronDown,
@@ -648,6 +649,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState('calc');
   // スケジュール画像インポーターのモーダル展開ステート
   const [isScheduleImporterOpen, setIsScheduleImporterOpen] = useState(false);
+  const [scheduleRefreshKey, setScheduleRefreshKey] = useState(0);
 
   // 日付・時刻ピッカー用のRefとハンドラー (起動直後でも確実にピッカーを起動)
   const dateInputRef = useRef(null);
@@ -2215,6 +2217,7 @@ export default function App() {
           {activeTab === 'schedule' && (
             <div className="space-y-4">
               <ScheduleCalendarView
+                key={scheduleRefreshKey}
                 onSelectForCalculation={handleSelectScheduleForCalculation}
                 onOpenImageImporter={() => {
                   setIsScheduleImporterOpen(true);
@@ -2249,7 +2252,8 @@ export default function App() {
                       calculateRoute(origin, applied.destination);
                     }}
                     onSaveToSchedules={() => {
-                      // 保存されたら画面反映
+                      // 保存されたらカレンダーを即時再描画
+                      setScheduleRefreshKey((k) => k + 1);
                     }}
                   />
                 </div>

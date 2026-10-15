@@ -16,6 +16,7 @@ import {
   ExternalLink,
   RotateCcw,
   Play,
+  CalendarCheck,
 } from 'lucide-react';
 import {
   GEMINI_API_KEY_STORAGE,
@@ -24,6 +25,7 @@ import {
   parseScheduleImageWithGemini,
   calculateMeetingTime,
 } from './geminiScheduleParser';
+import { mergeImportedEvents } from './scheduleStore';
 
 const MEETING_PRESETS = [
   { label: '2時間前集合', minutes: 120, shortLabel: '2時間前 (120分)' },
@@ -33,8 +35,17 @@ const MEETING_PRESETS = [
   { label: '開始時刻そのまま', minutes: 0, shortLabel: 'そのまま (0分)' },
 ];
 
-export default function ScheduleImageImporter({ onApplySchedule }) {
-  const [isOpen, setIsOpen] = useState(false);
+export default function ScheduleImageImporter({
+  onApplySchedule,
+  onSaveToSchedules,
+  isOpen: controlledIsOpen,
+  onToggleOpen,
+}) {
+  const [localIsOpen, setLocalIsOpen] = useState(false);
+  const isOpen = controlledIsOpen !== undefined ? controlledIsOpen : localIsOpen;
+  const toggleOpen = onToggleOpen || (() => setLocalIsOpen((prev) => !prev));
+
+  const [saveSuccessMessage, setSaveSuccessMessage] = useState('');
   const [apiKey, setApiKey] = useState(() => {
     const envKey = import.meta.env?.VITE_GEMINI_API_KEY || '';
     const saved = localStorage.getItem(GEMINI_API_KEY_STORAGE) || '';
@@ -108,7 +119,7 @@ export default function ScheduleImageImporter({ onApplySchedule }) {
     // 添付画像の「新人戦 vs ソルース 10:00@羽生中央公園」をデフォルト選択
     setSelectedEventId('sample-3');
     setMeetingLeadMinutes(120);
-    setIsOpen(true);
+    if (controlledIsOpen === undefined) setLocalIsOpen(true);
   };
 
   const selectedEvent = parsedEvents.find((e) => e.id === selectedEventId) || null;
@@ -118,6 +129,19 @@ export default function ScheduleImageImporter({ onApplySchedule }) {
   const calculatedMeetingTime = selectedEvent?.time
     ? calculateMeetingTime(selectedEvent.time, effectiveMeetingLead)
     : '09:00';
+
+  // 抽出された全予定をスケジュール帳（カレンダー）に蓄積・保存
+  const handleSaveAllToSchedule = () => {
+    if (parsedEvents.length === 0) return;
+    const result = mergeImportedEvents(parsedEvents, effectiveMeetingLead);
+    setSaveSuccessMessage(`🎉 ${result.addedCount}件の新規予定を追加、${result.updatedCount}件を更新しました！`);
+    if (onSaveToSchedules) {
+      onSaveToSchedules(result.schedules);
+    }
+    setTimeout(() => {
+      setSaveSuccessMessage('');
+    }, 4500);
+  };
 
   // 選択した予定をメインアプリに反映
   const handleApply = () => {
@@ -131,17 +155,17 @@ export default function ScheduleImageImporter({ onApplySchedule }) {
     });
 
     // 成功フィードバック
-    setIsOpen(false);
+    if (controlledIsOpen === undefined) setLocalIsOpen(false);
   };
 
   return (
     <section className="bg-gradient-to-br from-emerald-50 via-teal-50 to-sky-50 rounded-3xl p-4 shadow-sm border border-emerald-200/80 space-y-3">
       {/* 折りたたみヘッダー */}
       <div
-        onClick={() => setIsOpen(!isOpen)}
+        onClick={toggleOpen}
         role="button"
         tabIndex={0}
-        onKeyDown={(e) => e.key === 'Enter' && setIsOpen(!isOpen)}
+        onKeyDown={(e) => e.key === 'Enter' && toggleOpen()}
         className="flex items-center justify-between cursor-pointer select-none"
       >
         <div className="flex items-center gap-2.5">
@@ -308,24 +332,45 @@ export default function ScheduleImageImporter({ onApplySchedule }) {
           {/* 解析された予定一覧 */}
           {parsedEvents.length > 0 && (
             <div className="space-y-2.5">
-              <div className="flex items-center justify-between text-xs font-extrabold text-slate-800 px-1">
+              {/* 保存成功フィードバックメッセージ */}
+              {saveSuccessMessage && (
+                <div className="bg-emerald-600 text-white text-xs font-bold p-3 rounded-2xl shadow-md flex items-center justify-between animate-fadeIn">
+                  <div className="flex items-center gap-2">
+                    <CheckCircle className="w-4 h-4 shrink-0 text-emerald-200" />
+                    <span>{saveSuccessMessage}</span>
+                  </div>
+                  <span className="text-[10px] bg-white/20 px-2 py-0.5 rounded-full">保存完了</span>
+                </div>
+              )}
+
+              <div className="flex flex-wrap items-center justify-between gap-2 text-xs font-extrabold text-slate-800 px-1">
                 <span className="flex items-center gap-1">
                   <span>📅 検出された予定 ({parsedEvents.length}件)</span>
                   <span className="text-[10px] text-slate-500 font-normal">
-                    タップして選択してください
+                    タップして個別選択、または一括蓄積
                   </span>
                 </span>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setParsedEvents([]);
-                    setSelectedEventId(null);
-                    setImagePreview(null);
-                  }}
-                  className="text-[11px] text-slate-400 hover:text-slate-600"
-                >
-                  クリア
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handleSaveAllToSchedule}
+                    className="bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white font-black text-[11px] px-3 py-1.5 rounded-xl shadow-sm flex items-center gap-1 transition"
+                  >
+                    <CalendarCheck className="w-3.5 h-3.5" />
+                    <span>全{parsedEvents.length}件をカレンダーに蓄積</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setParsedEvents([]);
+                      setSelectedEventId(null);
+                      setImagePreview(null);
+                    }}
+                    className="text-[11px] text-slate-400 hover:text-slate-600"
+                  >
+                    クリア
+                  </button>
+                </div>
               </div>
 
               {/* スクロール可能なイベントカードリスト */}

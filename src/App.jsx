@@ -15,6 +15,7 @@ import {
   Sparkles,
   RotateCcw,
   Calendar,
+  CalendarCheck,
   ExternalLink,
   ChevronRight,
   ChevronDown,
@@ -27,6 +28,7 @@ import RouteMap from './RouteMap';
 import PlaceAutocompleteInput from './PlaceAutocompleteInput';
 import NearbySpotsSection from './NearbySpotsSection';
 import ScheduleImageImporter from './ScheduleImageImporter';
+import ScheduleCalendarView from './ScheduleCalendarView';
 import MatchWeatherChecklist from './MatchWeatherChecklist';
 import GoogleMapsKeyModal from './GoogleMapsKeyModal';
 import { fetchNearbySpots } from './nearbySpots';
@@ -642,8 +644,10 @@ export default function App() {
   const [isGmapsModalOpen, setIsGmapsModalOpen] = useState(false);
   const [gmapsApiKey, setGmapsApiKey] = useState(() => getSavedGoogleMapsApiKey());
 
-  // UIタブ切り替え ('calc' | 'spots' | 'checklist')
+  // UIタブ切り替え ('calc' | 'schedule' | 'spots' | 'checklist')
   const [activeTab, setActiveTab] = useState('calc');
+  // スケジュール画像インポーターのモーダル展開ステート
+  const [isScheduleImporterOpen, setIsScheduleImporterOpen] = useState(false);
 
   // 日付・時刻ピッカー用のRefとハンドラー (起動直後でも確実にピッカーを起動)
   const dateInputRef = useRef(null);
@@ -952,6 +956,27 @@ export default function App() {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
+  const handleSelectScheduleForCalculation = useCallback(
+    (sched) => {
+      if (sched.venue) {
+        setDestination(sched.venue);
+        setSelectedPresetId(null);
+      }
+      if (sched.dateIso) {
+        setTravelDate(sched.dateIso);
+      }
+      if (sched.meetingTime) {
+        setArrivalTime(sched.meetingTime);
+      }
+      setManualDriveMinutes('');
+      setManualTransitMinutes('');
+      setActiveTab('calc');
+      calculateRoute(origin, sched.venue || destination);
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    },
+    [origin, destination, calculateRoute]
+  );
+
   const handleAddPreset = (e) => {
     e.preventDefault();
     const name = newPresetName.trim();
@@ -1194,16 +1219,16 @@ export default function App() {
           </div>
         </header>
 
-        {/* 📱 3つの目的別タブバー（逆算ナビ / 駐車場・周辺 / 持ち物・天気） */}
+        {/* 📱 4つの目的別タブバー（逆算ナビ / 試合日程 / 駐車場・周辺 / 持ち物・天気） */}
         <nav
-          className={`text-white px-2 py-1.5 shadow-md sticky top-[68px] z-20 flex items-center justify-around gap-1 transition-colors duration-300 ${
+          className={`text-white px-2 py-1.5 shadow-md sticky top-[68px] z-20 grid grid-cols-4 gap-1 transition-colors duration-300 ${
             isTrainMode ? 'bg-indigo-900' : 'bg-emerald-800'
           }`}
         >
           <button
             type="button"
             onClick={() => setActiveTab('calc')}
-            className={`flex-1 py-2 px-1 text-center rounded-xl text-xs font-black transition flex items-center justify-center gap-1.5 ${
+            className={`py-2 px-1 text-center rounded-xl text-xs font-black transition flex items-center justify-center gap-1 ${
               activeTab === 'calc'
                 ? isTrainMode
                   ? 'bg-white text-indigo-950 shadow-md scale-[1.02]'
@@ -1214,13 +1239,30 @@ export default function App() {
             }`}
           >
             {isTrainMode ? <Train className="w-3.5 h-3.5" /> : <Car className="w-3.5 h-3.5" />}
-            <span>逆算ナビ</span>
+            <span className="truncate">逆算ナビ</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveTab('schedule')}
+            className={`py-2 px-1 text-center rounded-xl text-xs font-black transition flex items-center justify-center gap-1 ${
+              activeTab === 'schedule'
+                ? isTrainMode
+                  ? 'bg-white text-indigo-950 shadow-md scale-[1.02]'
+                  : 'bg-white text-emerald-950 shadow-md scale-[1.02]'
+                : isTrainMode
+                ? 'text-indigo-200 hover:bg-white/10'
+                : 'text-emerald-100 hover:bg-white/10'
+            }`}
+          >
+            <CalendarCheck className="w-3.5 h-3.5" />
+            <span className="truncate">試合日程</span>
           </button>
 
           <button
             type="button"
             onClick={() => setActiveTab('spots')}
-            className={`flex-1 py-2 px-1 text-center rounded-xl text-xs font-black transition flex items-center justify-center gap-1.5 ${
+            className={`py-2 px-1 text-center rounded-xl text-xs font-black transition flex items-center justify-center gap-1 ${
               activeTab === 'spots'
                 ? isTrainMode
                   ? 'bg-white text-indigo-950 shadow-md scale-[1.02]'
@@ -1231,28 +1273,13 @@ export default function App() {
             }`}
           >
             <MapPin className="w-3.5 h-3.5" />
-            <span>{isTrainMode ? '駅・周辺施設' : '駐車場・周辺'}</span>
-            {(nearbyParkings.length > 0 || nearbyStations.length > 0) && (
-              <span
-                className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold ${
-                  activeTab === 'spots'
-                    ? isTrainMode
-                      ? 'bg-indigo-100 text-indigo-800'
-                      : 'bg-emerald-100 text-emerald-800'
-                    : isTrainMode
-                    ? 'bg-indigo-950 text-indigo-200'
-                    : 'bg-emerald-900 text-emerald-200'
-                }`}
-              >
-                {isTrainMode ? nearbyStations.length : nearbyParkings.length}
-              </span>
-            )}
+            <span className="truncate">{isTrainMode ? '駅・周辺' : '周辺'}</span>
           </button>
 
           <button
             type="button"
             onClick={() => setActiveTab('checklist')}
-            className={`flex-1 py-2 px-1 text-center rounded-xl text-xs font-black transition flex items-center justify-center gap-1.5 ${
+            className={`py-2 px-1 text-center rounded-xl text-xs font-black transition flex items-center justify-center gap-1 ${
               activeTab === 'checklist'
                 ? isTrainMode
                   ? 'bg-white text-indigo-950 shadow-md scale-[1.02]'
@@ -1263,7 +1290,7 @@ export default function App() {
             }`}
           >
             <CheckSquare className="w-3.5 h-3.5" />
-            <span>持ち物・天気</span>
+            <span className="truncate">持ち物</span>
           </button>
         </nav>
 
@@ -2184,7 +2211,53 @@ export default function App() {
             </>
           )}
 
-          {/* ==================== タブ 2: 🅿️ 駐車場・周辺スポット / 🚉 駅・周辺施設 ==================== */}
+          {/* ==================== タブ: 📅 試合日程・カレンダー管理 ==================== */}
+          {activeTab === 'schedule' && (
+            <div className="space-y-4">
+              <ScheduleCalendarView
+                onSelectForCalculation={handleSelectScheduleForCalculation}
+                onOpenImageImporter={() => {
+                  setIsScheduleImporterOpen(true);
+                  window.scrollTo({ top: 0, behavior: 'smooth' });
+                }}
+              />
+
+              {/* 画像インポーター（展開時） */}
+              {isScheduleImporterOpen && (
+                <div className="pt-2">
+                  <div className="flex items-center justify-between pb-2 px-1">
+                    <span className="text-xs font-black text-slate-800 flex items-center gap-1.5">
+                      <Camera className="w-4 h-4 text-emerald-600" />
+                      <span>📸 日程表画像の解析・カレンダー蓄積</span>
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setIsScheduleImporterOpen(false)}
+                      className="text-xs font-extrabold text-slate-500 hover:text-slate-800 bg-slate-100 hover:bg-slate-200 px-2.5 py-1 rounded-lg transition"
+                    >
+                      閉じる ✕
+                    </button>
+                  </div>
+                  <ScheduleImageImporter
+                    isOpen={true}
+                    onToggleOpen={() => setIsScheduleImporterOpen((p) => !p)}
+                    onApplySchedule={(applied) => {
+                      setDestination(applied.destination);
+                      setTravelDate(applied.travelDate);
+                      setArrivalTime(applied.arrivalTime);
+                      setActiveTab('calc');
+                      calculateRoute(origin, applied.destination);
+                    }}
+                    onSaveToSchedules={() => {
+                      // 保存されたら画面反映
+                    }}
+                  />
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ==================== タブ: 🅿️ 駐車場・周辺スポット / 🚉 駅・周辺施設 ==================== */}
           {activeTab === 'spots' && (
             <div className="space-y-4">
               {/* ルートマップ（スポット連動表示） */}
@@ -2295,14 +2368,14 @@ export default function App() {
         </main>
 
         {/* 📱 スマホ用 固定ボトムナビゲーションバー（親指片手操作対応） */}
-        <div className="fixed bottom-0 left-0 right-0 z-40 bg-white/95 backdrop-blur-md border-t border-slate-200/90 py-1.5 px-3 flex items-center justify-around max-w-md mx-auto shadow-2xl">
+        <div className="fixed bottom-0 left-0 right-0 z-40 bg-white/95 backdrop-blur-md border-t border-slate-200/90 py-1.5 px-2 grid grid-cols-4 max-w-md mx-auto shadow-2xl">
           <button
             type="button"
             onClick={() => {
               setActiveTab('calc');
               window.scrollTo({ top: 0, behavior: 'smooth' });
             }}
-            className={`flex-1 py-1.5 flex flex-col items-center justify-center gap-0.5 rounded-xl transition ${
+            className={`py-1 flex flex-col items-center justify-center gap-0.5 rounded-xl transition ${
               activeTab === 'calc'
                 ? isTrainMode
                   ? 'text-indigo-700 font-extrabold'
@@ -2321,10 +2394,28 @@ export default function App() {
           <button
             type="button"
             onClick={() => {
+              setActiveTab('schedule');
+              window.scrollTo({ top: 0, behavior: 'smooth' });
+            }}
+            className={`py-1 flex flex-col items-center justify-center gap-0.5 rounded-xl transition ${
+              activeTab === 'schedule'
+                ? isTrainMode
+                  ? 'text-indigo-700 font-extrabold'
+                  : 'text-emerald-700 font-extrabold'
+                : 'text-slate-400 hover:text-slate-600 font-medium'
+            }`}
+          >
+            <CalendarCheck className={`w-5 h-5 ${activeTab === 'schedule' ? 'stroke-[2.5]' : ''}`} />
+            <span className="text-[10px]">試合日程</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
               setActiveTab('spots');
               window.scrollTo({ top: 0, behavior: 'smooth' });
             }}
-            className={`flex-1 py-1.5 flex flex-col items-center justify-center gap-0.5 rounded-xl transition relative ${
+            className={`py-1 flex flex-col items-center justify-center gap-0.5 rounded-xl transition relative ${
               activeTab === 'spots'
                 ? isTrainMode
                   ? 'text-indigo-700 font-extrabold'
@@ -2333,14 +2424,7 @@ export default function App() {
             }`}
           >
             <MapPin className={`w-5 h-5 ${activeTab === 'spots' ? 'stroke-[2.5]' : ''}`} />
-            <span className="text-[10px]">{isTrainMode ? '駅・周辺' : '駐車場・周辺'}</span>
-            {(nearbyParkings.length > 0 || nearbyStations.length > 0) && (
-              <span
-                className={`absolute top-1 right-[25%] w-2 h-2 rounded-full ${
-                  isTrainMode ? 'bg-indigo-500' : 'bg-emerald-500'
-                }`}
-              />
-            )}
+            <span className="text-[10px]">{isTrainMode ? '駅・周辺' : '駐車場'}</span>
           </button>
 
           <button
@@ -2349,7 +2433,7 @@ export default function App() {
               setActiveTab('checklist');
               window.scrollTo({ top: 0, behavior: 'smooth' });
             }}
-            className={`flex-1 py-1.5 flex flex-col items-center justify-center gap-0.5 rounded-xl transition ${
+            className={`py-1 flex flex-col items-center justify-center gap-0.5 rounded-xl transition ${
               activeTab === 'checklist'
                 ? isTrainMode
                   ? 'text-indigo-700 font-extrabold'
@@ -2358,7 +2442,7 @@ export default function App() {
             }`}
           >
             <CheckSquare className={`w-5 h-5 ${activeTab === 'checklist' ? 'stroke-[2.5]' : ''}`} />
-            <span className="text-[10px]">持ち物・天気</span>
+            <span className="text-[10px]">持ち物</span>
           </button>
         </div>
 

@@ -237,3 +237,91 @@ export function exportToIcs(event) {
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
 }
+
+// UTF-8文字列を安全にBase64化
+function utf8ToBase64(str) {
+  return window.btoa(encodeURIComponent(str).replace(/%([0-9A-F]{2})/g, (match, p1) => {
+    return String.fromCharCode('0x' + p1);
+  }));
+}
+
+// Base64から安全にUTF-8文字列化
+function base64ToUtf8(str) {
+  return decodeURIComponent(Array.prototype.map.call(window.atob(str), (c) => {
+    return '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2);
+  }).join(''));
+}
+
+/**
+ * 家族連携用の共有URLを生成
+ */
+export function generateFamilyShareUrl(schedules) {
+  if (!schedules || schedules.length === 0) return '';
+  // 過去すぎる予定（30日以上前）は除外してURL長を節約
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() - 30);
+  const cutoffIso = cutoff.toISOString().slice(0, 10);
+
+  const compact = schedules
+    .filter((s) => s.dateIso >= cutoffIso)
+    .map((s) => ({
+      d: s.dateIso,
+      t: s.title,
+      c: s.category || '公式戦',
+      m: s.meetingTime || '09:00',
+      k: s.kickoffTime || '',
+      v: s.venue || '',
+      n: s.notes || '',
+    }));
+
+  try {
+    const json = JSON.stringify(compact);
+    const encoded = encodeURIComponent(utf8ToBase64(json));
+    const base = window.location.origin + window.location.pathname;
+    return `${base}#sync=${encoded}`;
+  } catch (err) {
+    console.error('Failed to generate family share url:', err);
+    return '';
+  }
+}
+
+/**
+ * URLハッシュまたはパラメータから共有データを解析して復元
+ */
+export function parseFamilyShareUrl(hashOrQuery) {
+  try {
+    const raw = hashOrQuery || (typeof window !== 'undefined' ? (window.location.hash || window.location.search) : '');
+    const match = raw.match(/[#?&]sync=([^&]+)/);
+    if (!match || !match[1]) return null;
+
+    const base64Str = decodeURIComponent(match[1]);
+    const jsonStr = base64ToUtf8(base64Str);
+    const compactList = JSON.parse(jsonStr);
+
+    if (!Array.isArray(compactList) || compactList.length === 0) return null;
+
+    // 通常のスケジュールフォーマットに復元
+    return compactList.map((item) => ({
+      dateIso: item.d,
+      dateLabel: item.d,
+      title: item.t,
+      category: item.c || '公式戦',
+      meetingTime: item.m,
+      kickoffTime: item.k,
+      isKickoff: Boolean(item.k),
+      venue: item.v,
+      notes: item.n,
+    }));
+  } catch (err) {
+    console.error('Failed to parse family share url:', err);
+    return null;
+  }
+}
+
+/**
+ * LINEで送るメッセージ用リンクを生成
+ */
+export function createLineShareUrl(shareUrl, scheduleCount) {
+  const message = `⚽ サッカー試合日程（${scheduleCount}件）を共有したよ！\n下記のリンクをタップすると、アプリのカレンダーに自動反映されるよ👇\n${shareUrl}`;
+  return `https://line.me/R/msg/text/?${encodeURIComponent(message)}`;
+}

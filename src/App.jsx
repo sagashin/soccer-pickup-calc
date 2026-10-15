@@ -32,6 +32,7 @@ import ScheduleImageImporter from './ScheduleImageImporter';
 import ScheduleCalendarView from './ScheduleCalendarView';
 import MatchWeatherChecklist from './MatchWeatherChecklist';
 import GoogleMapsKeyModal from './GoogleMapsKeyModal';
+import { parseFamilyShareUrl, mergeImportedEvents } from './scheduleStore';
 import { fetchNearbySpots } from './nearbySpots';
 import {
   getSavedGoogleMapsApiKey,
@@ -650,6 +651,29 @@ export default function App() {
   // スケジュール画像インポーターのモーダル展開ステート
   const [isScheduleImporterOpen, setIsScheduleImporterOpen] = useState(false);
   const [scheduleRefreshKey, setScheduleRefreshKey] = useState(0);
+  // 家族共有リンクから受信した際のお祝いトースト
+  const [familySyncToast, setFamilySyncToast] = useState('');
+
+  // 家族共有リンク (?sync=... または #sync=...) の自動同期受信チェック
+  useEffect(() => {
+    const sharedEvents = parseFamilyShareUrl();
+    if (sharedEvents && sharedEvents.length > 0) {
+      const result = mergeImportedEvents(sharedEvents);
+      setFamilySyncToast(`👨‍👩‍👦 家族から共有された試合日程（${sharedEvents.length}件）を取り込みました！`);
+      setScheduleRefreshKey((k) => k + 1);
+      setActiveTab('schedule');
+
+      // URLのハッシュやクエリをクリーンアップ
+      try {
+        const cleanUrl = window.location.origin + window.location.pathname;
+        window.history.replaceState(null, '', cleanUrl);
+      } catch (_) {}
+
+      setTimeout(() => {
+        setFamilySyncToast('');
+      }, 7000);
+    }
+  }, []);
 
   // 日付・時刻ピッカー用のRefとハンドラー (起動直後でも確実にピッカーを起動)
   const dateInputRef = useRef(null);
@@ -1297,6 +1321,30 @@ export default function App() {
         </nav>
 
         <main className="flex-1 px-4 py-4 space-y-4 pb-28">
+          {/* 👨‍👩‍👦 家族同期受信トーストバナー */}
+          {familySyncToast && (
+            <div className="bg-gradient-to-r from-emerald-600 to-teal-600 text-white rounded-2xl p-4 shadow-lg flex items-center justify-between gap-3 border border-emerald-400">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-xl bg-white/20 flex items-center justify-center shrink-0">
+                  <Check className="w-5 h-5 text-white" />
+                </div>
+                <div>
+                  <div className="text-xs font-black">{familySyncToast}</div>
+                  <div className="text-[10px] text-emerald-100 font-medium">
+                    カレンダーに最新スケジュールが追加・更新されました
+                  </div>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setFamilySyncToast('')}
+                className="text-white/80 hover:text-white text-xs font-bold p-1"
+              >
+                ✕
+              </button>
+            </div>
+          )}
+
           {/* ==================== タブ 1: 逆算ナビ ==================== */}
           {activeTab === 'calc' && (
             <>

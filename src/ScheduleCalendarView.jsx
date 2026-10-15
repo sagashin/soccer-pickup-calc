@@ -29,6 +29,8 @@ import {
   exportToIcs,
   calculateMeetingTimeFromKickoff,
   mergeImportedEvents,
+  generateFamilyShareUrl,
+  createLineShareUrl,
 } from './scheduleStore';
 import { SAMPLE_SCHEDULE_EVENTS } from './geminiScheduleParser';
 
@@ -66,6 +68,53 @@ export default function ScheduleCalendarView({
     venue: '',
     notes: '',
   });
+
+  // 家族共有モーダル & コピーフィードバック
+  const [isShareModalOpen, setIsShareModalOpen] = useState(false);
+  const [copyFeedback, setCopyFeedback] = useState(false);
+
+  // 家族共有の実行（LINE / Web Share）
+  const handleShareToFamily = async () => {
+    if (schedules.length === 0) {
+      alert('共有する予定がありません。まずは日程を追加してください。');
+      return;
+    }
+
+    const shareUrl = generateFamilyShareUrl(schedules);
+    if (!shareUrl) return;
+
+    const shareTitle = '⚽ サッカー試合日程の共有';
+    const shareText = `チームの最新試合日程（${schedules.length}件）を共有したよ！\n下記のリンクを開くとアプリのカレンダーに自動反映されます。`;
+
+    // スマホのネイティブ共有機能が使える場合
+    if (navigator.share) {
+      try {
+        await navigator.share({
+          title: shareTitle,
+          text: shareText,
+          url: shareUrl,
+        });
+        return;
+      } catch (err) {
+        if (err.name === 'AbortError') return;
+      }
+    }
+
+    // ネイティブ共有非対応の場合はモーダルを開く
+    setIsShareModalOpen(true);
+  };
+
+  const handleCopyShareLink = async () => {
+    const shareUrl = generateFamilyShareUrl(schedules);
+    if (!shareUrl) return;
+    try {
+      await navigator.clipboard.writeText(shareUrl);
+      setCopyFeedback(true);
+      setTimeout(() => setCopyFeedback(false), 3000);
+    } catch (_) {
+      window.prompt('以下の共有URLをコピーしてください:', shareUrl);
+    }
+  };
 
   // 再読み込み
   const reloadSchedules = useCallback(() => {
@@ -223,7 +272,20 @@ export default function ScheduleCalendarView({
             </p>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
+            {/* 👨‍👩‍👦 家族に共有ボタン */}
+            {schedules.length > 0 && (
+              <button
+                type="button"
+                onClick={handleShareToFamily}
+                className="bg-emerald-50 hover:bg-emerald-100 active:scale-95 text-emerald-800 border border-emerald-300 font-extrabold text-xs px-3 py-2.5 rounded-xl flex items-center gap-1.5 transition shadow-sm"
+                title="LINEで妻や息子にカレンダー日程を一発共有"
+              >
+                <Share2 className="w-4 h-4 text-emerald-600" />
+                <span>👨‍👩‍👦 家族に共有</span>
+              </button>
+            )}
+
             {/* 📸 画像から追加ボタン */}
             <button
               type="button"
@@ -673,6 +735,59 @@ export default function ScheduleCalendarView({
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* 👨‍👩‍👦 家族共有モーダル */}
+      {isShareModalOpen && (
+        <div className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl max-w-sm w-full p-5 shadow-2xl border border-slate-200 space-y-4">
+            <div className="flex items-center justify-between">
+              <h3 className="text-base font-black text-slate-900 flex items-center gap-2">
+                <span>👨‍👩‍👦 家族に試合日程を共有</span>
+              </h3>
+              <button
+                type="button"
+                onClick={() => setIsShareModalOpen(false)}
+                className="w-7 h-7 rounded-lg hover:bg-slate-100 flex items-center justify-center text-slate-500"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-3.5 space-y-1">
+              <div className="text-xs font-black text-emerald-950 flex items-center gap-1.5">
+                <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                <span>ワンタップでカレンダー同期</span>
+              </div>
+              <p className="text-[11px] font-bold text-emerald-800 leading-relaxed">
+                LINEで妻や息子にリンクを送ると、届いたリンクを開くだけで最新の日程（{schedules.length}件）が相手のスマホのカレンダーに一発反映されます！
+              </p>
+            </div>
+
+            <div className="space-y-2 pt-1">
+              {/* LINEで直接送る */}
+              <a
+                href={createLineShareUrl(generateFamilyShareUrl(schedules), schedules.length)}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="w-full bg-[#06C755] hover:bg-[#05b34c] active:scale-95 text-white font-black py-3.5 px-4 rounded-xl shadow-md flex items-center justify-center gap-2 transition text-xs"
+              >
+                <Share2 className="w-4 h-4" />
+                <span>LINEで家族に送る</span>
+              </a>
+
+              {/* リンクをコピー */}
+              <button
+                type="button"
+                onClick={handleCopyShareLink}
+                className="w-full bg-slate-100 hover:bg-slate-200 active:scale-95 text-slate-800 font-extrabold py-3 px-4 rounded-xl border border-slate-200 flex items-center justify-center gap-2 transition text-xs"
+              >
+                <Download className="w-4 h-4" />
+                <span>{copyFeedback ? '✓ 共有リンクをコピーしました！' : '共有リンクをコピー'}</span>
+              </button>
+            </div>
           </div>
         </div>
       )}

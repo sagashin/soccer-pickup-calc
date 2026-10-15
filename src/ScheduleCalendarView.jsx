@@ -18,6 +18,7 @@ import {
   Download,
   Share2,
   X,
+  Car,
 } from 'lucide-react';
 import {
   CATEGORY_COLORS,
@@ -35,6 +36,7 @@ import {
 } from './scheduleStore';
 import { SAMPLE_SCHEDULE_EVENTS } from './geminiScheduleParser';
 import { useEventWeather } from './weatherService';
+import { calculateFastEstimateDeparture } from './geoUtils';
 
 const WEEKDAYS = ['日', '月', '火', '水', '木', '金', '土'];
 const CATEGORY_OPTIONS = ['公式戦', '新人戦', '練習試合', '練習', 'その他'];
@@ -818,6 +820,20 @@ function ScheduleCard({ event, onSelectForCalculation, onEdit, onDelete }) {
   const isPast = event.dateIso < new Date().toISOString().slice(0, 10);
   const { weather } = useEventWeather(event.venue, event.dateIso);
 
+  // ユーザーの登録出発地（自宅など）
+  const userOrigin = useMemo(() => {
+    try {
+      return localStorage.getItem('soccer_pickup_origin_v1') || '';
+    } catch (_) {
+      return '';
+    }
+  }, []);
+
+  // 公式戦の場合の2時間30分前到着前提の出発時間（仮）を計算（外部通信ゼロ・ミリ秒算出）
+  const departureEstimate = useMemo(() => {
+    return calculateFastEstimateDeparture(event, userOrigin);
+  }, [event, userOrigin]);
+
   return (
     <div
       className={`bg-white rounded-2xl p-3.5 border transition shadow-sm ${
@@ -883,6 +899,40 @@ function ScheduleCard({ event, onSelectForCalculation, onEdit, onDelete }) {
               </div>
             )}
           </div>
+
+          {/* 🚗 公式戦などの出発目安時間（仮） */}
+          {departureEstimate && (
+            <div className="pt-0.5">
+              <div
+                className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl text-xs font-black border transition ${
+                  departureEstimate.isOfficial
+                    ? 'bg-amber-50 text-amber-950 border-amber-300 shadow-[0_1px_2px_rgba(245,158,11,0.08)]'
+                    : 'bg-emerald-50 text-emerald-950 border-emerald-200'
+                }`}
+                title={
+                  departureEstimate.hasOriginCoords
+                    ? `【出発時間(仮)の目安】\n・キックオフの2時間30分前(${departureEstimate.targetArrival})に現地到着想定\n・自宅(${userOrigin})から移動+バッファ(計約${departureEstimate.durationMin}分)を逆算\n※右側の「出発時間を計算」を押すと最新の渋滞考慮ルートが計算されます。`
+                    : `【到着目安】\n・キックオフの2時間30分前(${departureEstimate.targetArrival})に現地到着想定\n※「逆算ナビ」で出発地を設定すると、自宅からの所要時間を自動逆算します。`
+                }
+              >
+                <Car
+                  className={`w-3.5 h-3.5 shrink-0 ${
+                    departureEstimate.isOfficial ? 'text-amber-600' : 'text-emerald-600'
+                  }`}
+                />
+                <span className="font-extrabold text-amber-950">
+                  🚗 出発目安 {departureEstimate.departureTime} (仮)
+                </span>
+                <span
+                  className={`text-[10px] font-bold ${
+                    departureEstimate.isOfficial ? 'text-amber-700/90' : 'text-emerald-700/90'
+                  }`}
+                >
+                  ({departureEstimate.isOfficial ? 'KO 2.5h前' : '集合'} {departureEstimate.targetArrival}着想定)
+                </span>
+              </div>
+            </div>
+          )}
 
           {event.notes && (
             <p className="text-[11px] font-medium text-slate-500 line-clamp-1">

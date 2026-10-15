@@ -50,6 +50,7 @@ import {
   getCachedCoords,
   saveCachedCoords,
   geocodeAddress,
+  calculateHubenyDistanceKm,
 } from './geoUtils';
 
 const STORAGE_KEYS = {
@@ -267,24 +268,6 @@ function getAutoTrafficInfo(dateStr, timeStr, estimatedMinutes = 35) {
     }
     return { multiplier: 1.1, reason: `平日 (${WEEKDAYS_JA[day]})・日中通常交通量 (1.1x)` };
   }
-}
-
-function calculateHubenyDistanceKm(lat1, lon1, lat2, lon2) {
-  const rad = Math.PI / 180;
-  const radLat1 = lat1 * rad;
-  const radLat2 = lat2 * rad;
-  const dLat = (lat2 - lat1) * rad;
-  const dLon = (lon2 - lon1) * rad;
-  const a = 6378137.0;
-  const e2 = 0.00669437999019758;
-  const meanLat = (radLat1 + radLat2) / 2;
-  const w = Math.sqrt(1 - e2 * Math.sin(meanLat) * Math.sin(meanLat));
-  const m = (a * (1 - e2)) / Math.pow(w, 3);
-  const n = a / w;
-  const dist = Math.sqrt(
-    Math.pow(dLat * m, 2) + Math.pow(dLon * n * Math.cos(meanLat), 2)
-  );
-  return dist / 1000;
 }
 
 async function fetchOsrmRoute(originCoords, destCoords) {

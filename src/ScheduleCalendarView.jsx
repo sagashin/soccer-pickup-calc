@@ -30,6 +30,7 @@ import {
   calculateMeetingTimeFromKickoff,
   mergeImportedEvents,
   generateFamilyShareUrl,
+  getShortFamilyShareUrl,
   createLineShareUrl,
 } from './scheduleStore';
 import { SAMPLE_SCHEDULE_EVENTS } from './geminiScheduleParser';
@@ -69,9 +70,11 @@ export default function ScheduleCalendarView({
     notes: '',
   });
 
-  // 家族共有モーダル & コピーフィードバック
+  // 家族共有モーダル & コピーフィードバック & 短縮URLステート
   const [isShareModalOpen, setIsShareModalOpen] = useState(false);
   const [copyFeedback, setCopyFeedback] = useState(false);
+  const [shortShareUrl, setShortShareUrl] = useState('');
+  const [isGeneratingShortUrl, setIsGeneratingShortUrl] = useState(false);
 
   // 家族共有の実行（LINE / Web Share）
   const handleShareToFamily = async () => {
@@ -80,11 +83,22 @@ export default function ScheduleCalendarView({
       return;
     }
 
-    const shareUrl = generateFamilyShareUrl(schedules);
-    if (!shareUrl) return;
+    setIsGeneratingShortUrl(true);
+    let finalShareUrl = generateFamilyShareUrl(schedules);
+
+    // 短縮URLを生成（TinyURL経由で超コンパクト化）
+    try {
+      const short = await getShortFamilyShareUrl(schedules);
+      if (short) {
+        finalShareUrl = short;
+      }
+    } catch (_) {}
+
+    setShortShareUrl(finalShareUrl);
+    setIsGeneratingShortUrl(false);
 
     const shareTitle = '⚽ サッカー試合日程の共有';
-    const shareText = `チームの最新試合日程（${schedules.length}件）を共有したよ！\n下記のリンクを開くとアプリのカレンダーに自動反映されます。`;
+    const shareText = `チームの最新試合日程（${schedules.length}件）を共有したよ！\n👇開くだけでカレンダーに自動反映`;
 
     // スマホのネイティブ共有機能が使える場合
     if (navigator.share) {
@@ -92,7 +106,7 @@ export default function ScheduleCalendarView({
         await navigator.share({
           title: shareTitle,
           text: shareText,
-          url: shareUrl,
+          url: finalShareUrl,
         });
         return;
       } catch (err) {
@@ -105,14 +119,14 @@ export default function ScheduleCalendarView({
   };
 
   const handleCopyShareLink = async () => {
-    const shareUrl = generateFamilyShareUrl(schedules);
-    if (!shareUrl) return;
+    const targetUrl = shortShareUrl || generateFamilyShareUrl(schedules);
+    if (!targetUrl) return;
     try {
-      await navigator.clipboard.writeText(shareUrl);
+      await navigator.clipboard.writeText(targetUrl);
       setCopyFeedback(true);
       setTimeout(() => setCopyFeedback(false), 3000);
     } catch (_) {
-      window.prompt('以下の共有URLをコピーしてください:', shareUrl);
+      window.prompt('以下の共有URLをコピーしてください:', targetUrl);
     }
   };
 
@@ -769,13 +783,13 @@ export default function ScheduleCalendarView({
             <div className="space-y-2 pt-1">
               {/* LINEで直接送る */}
               <a
-                href={createLineShareUrl(generateFamilyShareUrl(schedules), schedules.length)}
+                href={createLineShareUrl(shortShareUrl || generateFamilyShareUrl(schedules), schedules.length)}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="w-full bg-[#06C755] hover:bg-[#05b34c] active:scale-95 text-white font-black py-3.5 px-4 rounded-xl shadow-md flex items-center justify-center gap-2 transition text-xs"
               >
                 <Share2 className="w-4 h-4" />
-                <span>LINEで家族に送る</span>
+                <span>{isGeneratingShortUrl ? '短縮リンク作成中...' : 'LINEで家族に送る'}</span>
               </a>
 
               {/* リンクをコピー */}

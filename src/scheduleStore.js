@@ -319,9 +319,31 @@ export function parseFamilyShareUrl(hashOrQuery) {
 }
 
 /**
- * LINEで送るメッセージ用リンクを生成
+ * LINEで送るメッセージ用リンクを生成（コンパクトな文面）
  */
 export function createLineShareUrl(shareUrl, scheduleCount) {
-  const message = `⚽ サッカー試合日程（${scheduleCount}件）を共有したよ！\n下記のリンクをタップすると、アプリのカレンダーに自動反映されるよ👇\n${shareUrl}`;
+  const message = `⚽ サッカー試合日程（${scheduleCount}件）を共有したよ！\n👇タップして開くとカレンダーに自動反映\n${shareUrl}`;
   return `https://line.me/R/msg/text/?${encodeURIComponent(message)}`;
+}
+
+/**
+ * 短縮URLを取得（TinyURL API経由で1行の超コンパクトURLに変換）
+ */
+export async function getShortFamilyShareUrl(schedules) {
+  const longUrl = generateFamilyShareUrl(schedules);
+  if (!longUrl) return '';
+
+  try {
+    const res = await fetch(`/api/shorten?url=${encodeURIComponent(longUrl)}`);
+    if (res.ok) {
+      const data = await res.json();
+      if (data.shortUrl) {
+        return data.shortUrl;
+      }
+    }
+  } catch (err) {
+    console.warn('Shorten API error, falling back to long URL:', err);
+  }
+
+  return longUrl;
 }

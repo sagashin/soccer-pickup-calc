@@ -2267,43 +2267,55 @@ export default function App() {
               <ScheduleCalendarView
                 key={scheduleRefreshKey}
                 onSelectForCalculation={handleSelectScheduleForCalculation}
-                onOpenImageImporter={() => {
-                  setIsScheduleImporterOpen(true);
-                  window.scrollTo({ top: 0, behavior: 'smooth' });
-                }}
+                onOpenImageImporter={() => setIsScheduleImporterOpen(true)}
               />
 
-              {/* 画像インポーター（展開時） */}
+              {/* 📸 画像インポーター（全画面ポップアップモーダル：スクロール不要で目の前に表示） */}
               {isScheduleImporterOpen && (
-                <div className="pt-2">
-                  <div className="flex items-center justify-between pb-2 px-1">
-                    <span className="text-xs font-black text-slate-800 flex items-center gap-1.5">
-                      <Camera className="w-4 h-4 text-emerald-600" />
-                      <span>📸 日程表画像の解析・カレンダー蓄積</span>
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => setIsScheduleImporterOpen(false)}
-                      className="text-xs font-extrabold text-slate-500 hover:text-slate-800 bg-slate-100 hover:bg-slate-200 px-2.5 py-1 rounded-lg transition"
-                    >
-                      閉じる ✕
-                    </button>
+                <div className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4 overflow-y-auto">
+                  <div className="bg-white rounded-3xl max-w-lg w-full max-h-[92vh] overflow-y-auto p-4 sm:p-5 shadow-2xl border border-slate-200 space-y-3">
+                    <div className="flex items-center justify-between pb-2 border-b border-slate-100">
+                      <div className="flex items-center gap-2">
+                        <div className="w-8 h-8 rounded-xl bg-emerald-100 text-emerald-700 flex items-center justify-center">
+                          <Camera className="w-4 h-4" />
+                        </div>
+                        <div>
+                          <h3 className="text-sm font-black text-slate-900 leading-tight">
+                            日程表画像から一発解析・カレンダー蓄積
+                          </h3>
+                          <p className="text-[10px] font-bold text-slate-500">
+                            LINEのスクショや写真をアップロード
+                          </p>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setIsScheduleImporterOpen(false)}
+                        className="w-8 h-8 rounded-xl hover:bg-slate-100 flex items-center justify-center text-slate-400 hover:text-slate-700 font-bold transition"
+                        title="閉じる"
+                      >
+                        ✕
+                      </button>
+                    </div>
+
+                    <ScheduleImageImporter
+                      isOpen={true}
+                      onToggleOpen={() => setIsScheduleImporterOpen((p) => !p)}
+                      onApplySchedule={(applied) => {
+                        setDestination(applied.destination);
+                        setTravelDate(applied.travelDate);
+                        setArrivalTime(applied.arrivalTime);
+                        setIsScheduleImporterOpen(false);
+                        setActiveTab('calc');
+                        calculateRoute(origin, applied.destination);
+                      }}
+                      onSaveToSchedules={() => {
+                        // 保存されたらカレンダーを即時再描画し、モーダルを閉じる
+                        setScheduleRefreshKey((k) => k + 1);
+                        setIsScheduleImporterOpen(false);
+                      }}
+                    />
                   </div>
-                  <ScheduleImageImporter
-                    isOpen={true}
-                    onToggleOpen={() => setIsScheduleImporterOpen((p) => !p)}
-                    onApplySchedule={(applied) => {
-                      setDestination(applied.destination);
-                      setTravelDate(applied.travelDate);
-                      setArrivalTime(applied.arrivalTime);
-                      setActiveTab('calc');
-                      calculateRoute(origin, applied.destination);
-                    }}
-                    onSaveToSchedules={() => {
-                      // 保存されたらカレンダーを即時再描画
-                      setScheduleRefreshKey((k) => k + 1);
-                    }}
-                  />
                 </div>
               )}
             </div>

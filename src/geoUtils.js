@@ -1,3 +1,5 @@
+import { getSavedGoogleMapsApiKey, geocodeWithGoogleMaps } from './googleMapsClient';
+
 /**
  * 地理・ジオコーディング・キャッシュユーティリティ
  */
@@ -104,4 +106,184 @@ export function saveCachedCoords(address, geoData) {
   } catch (e) {
     // ignore
   }
+}
+
+/**
+ * 住所・施設名の住所ジオコーディング（キャッシュ + Google Maps + 国土地理院 + Nominatim）
+ */
+export async function geocodeAddress(address) {
+  if (!address || typeof address !== 'string') return null;
+  const trimmed = address.trim();
+  if (!trimmed) return null;
+
+  const coordMatch = trimmed.match(/^(-?\d+(\.\d+)?)\s*,\s*(-?\d+(\.\d+)?)$/);
+  if (coordMatch) {
+    return {
+      lat: parseFloat(coordMatch[1]),
+      lon: parseFloat(coordMatch[3]),
+      displayName: `${coordMatch[1]}, ${coordMatch[3]}`,
+      candidates: [],
+    };
+  }
+
+  // 0. キャッシュに保存されている場合は外部通信なしで即座に返却（高速化 & API節約）
+  const cached = getCachedCoords(trimmed);
+  if (cached) {
+    return cached;
+  }
+
+  // 1. Google Maps APIキーが設定されている場合は Google Maps を最優先実行！ (西武台第2なども一発特定)
+  const gmapsKey = getSavedGoogleMapsApiKey();
+  if (gmapsKey) {
+    try {
+      const gResult = await geocodeWithGoogleMaps(trimmed, gmapsKey);
+      if (gResult) {
+        saveCachedCoords(trimmed, gResult);
+        return gResult;
+      }
+    } catch (e) {
+      console.warn('Google Maps geocoding error, falling back to OSM:', e);
+    }
+  }
+
+  // 2. キーがない場合、または失敗時はフリー地図（OSM + GSI安全版）
+  const hasMunicipality = /[都道府県市区町村]/.test(trimmed);
+  const coreQuery = trimmed
+    .replace(/(第\d+)?(グラウンド|グランド|公園|運動公園|スタジアム|フィールド|スポーツ|学校|中学|高校|FC|SC)$/i, '')
+    .trim();
+
+  const fetchFromGsi = async (requireMatch = true) => {
+    try {
+      const gsiUrl = `https://msearch.gsi.go.jp/address-search/AddressSearch?q=${encodeURIComponent(trimmed)}`;
+      const gsiRes = await fetch(gsiUrl);
+      if (gsiRes.ok) {
+        const gsiData = await gsiRes.json();
+        if (Array.isArray(gsiData) && gsiData.length > 0) {
+          // 防御: 「北海道」「青森県」等の無関係な都道府県リストは徹底除外
+          const validItems = gsiData.filter((item) => {
+            const title = item?.properties?.title || '';
+            const isJustPrefecture = /^(北海道|.+[都府県])$/.test(title);
+            if (isJustPrefecture) return false;
+            if (!requireMatch) return true;
+            return coreQuery.length >= 2
+              ? title.includes(coreQuery) || coreQuery.includes(title)
+              : title.includes(trimmed);
+          });
+
+          if (validItems.length > 0) {
+            const matched = validItems[0];
+            const [lon, lat] = matched.geometry.coordinates;
+            return {
+              lat,
+              lon,
+              displayName: matched.properties.title || trimmed,
+              candidates: [],
+            };
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('GSI geocoding fallback:', e);
+    }
+    return null;
+  };
+
+  const fetchFromNominatim = async (queryToSearch = trimmed) => {
+    try {
+      const nomUrl = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(
+        queryToSearch
+      )}&countrycodes=jp&limit=8&addressdetails=1&accept-language=ja`;
+      const nomRes = await fetch(nomUrl, {
+        headers: {
+          Accept: 'application/json',
+        },
+      });
+      if (nomRes.ok) {
+        const nomData = await nomRes.json();
+        if (Array.isArray(nomData) && nomData.length > 0) {
+          const scored = nomData
+            .map((item) => {
+              const name = item.display_name.split(',')[0] || item.name || '';
+              const category = item.class || item.category || '';
+              const type = item.type || '';
+              const score = getSoccerRelevanceScore(name, category, type);
+              return {
+                item,
+                name,
+                score,
+                lat: parseFloat(item.lat),
+                lon: parseFloat(item.lon),
+              };
+            })
+            .sort((a, b) => b.score - a.score);
+
+          const best = scored[0];
+          const uniqueCandidates = [];
+          const seen = new Set([best.name]);
+          for (let i = 1; i < scored.length; i++) {
+            const candName = scored[i].name;
+            if (!seen.has(candName) && candName.trim().length > 0) {
+              seen.add(candName);
+              uniqueCandidates.push({
+                name: candName,
+                lat: scored[i].lat,
+                lon: scored[i].lon,
+              });
+              if (uniqueCandidates.length >= 3) break;
+            }
+          }
+
+          return {
+            lat: best.lat,
+            lon: best.lon,
+            displayName: best.name || queryToSearch,
+            candidates: uniqueCandidates,
+          };
+        }
+      }
+    } catch (e) {
+      console.warn('Nominatim geocoding fallback:', e);
+    }
+    return null;
+  };
+
+  const looksLikeFacility = /(総合|運動|公園|グラウンド|スタジアム|フィールド|スポーツ|学校|中学|高校|FC|SC)/i.test(
+    trimmed
+  );
+
+  let finalResult = null;
+  if (looksLikeFacility) {
+    finalResult = await fetchFromNominatim(trimmed);
+    if (!finalResult) finalResult = await fetchFromGsi(true);
+  } else if (hasMunicipality) {
+    finalResult = await fetchFromGsi(false);
+    if (!finalResult) finalResult = await fetchFromNominatim(trimmed);
+  } else {
+    finalResult = await fetchFromGsi(true);
+    if (!finalResult) finalResult = await fetchFromNominatim(trimmed);
+  }
+
+  // 3. 学校名＋グラウンド等のフォールバック分解 (例: 「西武台第2グラウンド」→「西武台高校」で本校を検索)
+  if (!finalResult && coreQuery.length >= 2 && coreQuery !== trimmed) {
+    const schoolQuery =
+      coreQuery.endsWith('高校') || coreQuery.endsWith('学校')
+        ? coreQuery
+        : `${coreQuery}高校`;
+    const fallbackNom = await fetchFromNominatim(schoolQuery);
+    if (fallbackNom) {
+      finalResult = {
+        ...fallbackNom,
+        displayName: `${fallbackNom.displayName} (母体施設)`,
+      };
+    }
+  }
+
+  if (finalResult) {
+    saveCachedCoords(trimmed, finalResult);
+    return finalResult;
+  }
+
+  throw new Error(
+    `「${trimmed}」の場所が見つかりませんでした。Google Maps APIキーを設定するか、市区町村名を含めて入力してください。`
+  );
 }

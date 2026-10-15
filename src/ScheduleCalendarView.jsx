@@ -34,6 +34,7 @@ import {
   createLineShareUrl,
 } from './scheduleStore';
 import { SAMPLE_SCHEDULE_EVENTS } from './geminiScheduleParser';
+import { useEventWeather } from './weatherService';
 
 const WEEKDAYS = ['日', '月', '火', '水', '木', '金', '土'];
 const CATEGORY_OPTIONS = ['公式戦', '新人戦', '練習試合', '練習', 'その他'];
@@ -815,6 +816,7 @@ export default function ScheduleCalendarView({
 function ScheduleCard({ event, onSelectForCalculation, onEdit, onDelete }) {
   const catStyle = CATEGORY_COLORS[event.category] || CATEGORY_COLORS.その他;
   const isPast = event.dateIso < new Date().toISOString().slice(0, 10);
+  const { weather } = useEventWeather(event.venue, event.dateIso);
 
   return (
     <div
@@ -825,19 +827,37 @@ function ScheduleCard({ event, onSelectForCalculation, onEdit, onDelete }) {
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         {/* 左側: 試合情報 */}
         <div className="space-y-1.5 min-w-0 flex-1">
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-xs font-black text-slate-900 bg-slate-100 px-2 py-0.5 rounded-md">
-              {event.dateLabel || event.dateIso}
-            </span>
-            <span
-              className={`text-[10px] font-black px-2 py-0.5 rounded-md border ${catStyle.badge}`}
-            >
-              {event.category || '試合'}
-            </span>
-            {isPast && (
-              <span className="text-[10px] font-bold text-slate-400 bg-slate-200/60 px-1.5 py-0.5 rounded">
-                終了
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-xs font-black text-slate-900 bg-slate-100 px-2 py-0.5 rounded-md">
+                {event.dateLabel || event.dateIso}
               </span>
+              <span
+                className={`text-[10px] font-black px-2 py-0.5 rounded-md border ${catStyle.badge}`}
+              >
+                {event.category || '試合'}
+              </span>
+              {isPast && (
+                <span className="text-[10px] font-bold text-slate-400 bg-slate-200/60 px-1.5 py-0.5 rounded">
+                  終了
+                </span>
+              )}
+            </div>
+
+            {/* ☀️ 天気ミニバッジ (取得可能な場合のみ右上に表示) */}
+            {weather && (
+              <div
+                className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-black bg-gradient-to-r from-sky-50 to-blue-50/70 border border-sky-200/80 text-slate-800 shadow-[0_1px_2px_rgba(0,0,0,0.03)] shrink-0 cursor-default"
+                title={`【${event.venue || '会場'}の天気予報】\n${weather.label}\n最高: ${weather.tempMax}℃ / 最低: ${weather.tempMin}℃\n降水確率: ${weather.precipProb}%`}
+              >
+                <weather.Icon className={`w-3.5 h-3.5 ${weather.colorClass} shrink-0`} />
+                <span className="text-[11px] font-black text-slate-800">{weather.tempMax}°C</span>
+                {weather.precipProb > 0 ? (
+                  <span className="text-[10px] font-bold text-sky-700/90 flex items-center">
+                    {weather.precipProb}%
+                  </span>
+                ) : null}
+              </div>
             )}
           </div>
 

@@ -19,6 +19,7 @@ import {
   Share2,
   X,
   Car,
+  Loader2,
 } from 'lucide-react';
 import {
   CATEGORY_COLORS,
@@ -86,13 +87,16 @@ export default function ScheduleCalendarView({
       return;
     }
 
+    // まずモーダルを開く
+    setIsShareModalOpen(true);
     setIsGeneratingShortUrl(true);
+
     let finalShareUrl = generateFamilyShareUrl(schedules);
 
-    // 短縮URLを生成（TinyURL経由で超コンパクト化）
+    // 短縮URLを生成（TinyURL / is.gd経由で超コンパクト化）
     try {
       const short = await getShortFamilyShareUrl(schedules);
-      if (short) {
+      if (short && short.startsWith('http')) {
         finalShareUrl = short;
       }
     } catch (_) {}
@@ -100,25 +104,53 @@ export default function ScheduleCalendarView({
     setShortShareUrl(finalShareUrl);
     setIsGeneratingShortUrl(false);
 
-    const shareTitle = '⚽ サッカー試合日程の共有';
-    const shareText = `チームの最新試合日程（${schedules.length}件）を共有したよ！\n👇開くだけでカレンダーに自動反映`;
-
     // スマホのネイティブ共有機能が使える場合
     if (navigator.share) {
+      const shareTitle = '⚽ サッカー試合日程の共有';
+      const shareText = `チームの最新試合日程（${schedules.length}件）を共有したよ！\n👇開くだけでカレンダーに自動反映`;
       try {
         await navigator.share({
           title: shareTitle,
           text: shareText,
           url: finalShareUrl,
         });
-        return;
+        setIsShareModalOpen(false);
       } catch (err) {
-        if (err.name === 'AbortError') return;
+        // 共有キャンセル時はモーダルを開いたままにする
       }
     }
+  };
 
-    // ネイティブ共有非対応の場合はモーダルを開く
-    setIsShareModalOpen(true);
+  // LINE送信ボタンのアクション（未短縮の巨大URLでLINEのHTTP 400エラーになるのを徹底防止）
+  const handleSendToLine = async () => {
+    let targetUrl = shortShareUrl;
+    if (!targetUrl || targetUrl.length > 2500) {
+      setIsGeneratingShortUrl(true);
+      try {
+        const short = await getShortFamilyShareUrl(schedules);
+        if (short && short.startsWith('http')) {
+          targetUrl = short;
+          setShortShareUrl(short);
+        }
+      } catch (_) {}
+      setIsGeneratingShortUrl(false);
+    }
+
+    if (!targetUrl) {
+      targetUrl = generateFamilyShareUrl(schedules);
+    }
+
+    // 万が一どうしても短縮できずURLが2,500文字を超える場合は直接LINEへ飛ばさずコピー案内
+    if (targetUrl.length > 2500) {
+      try {
+        await navigator.clipboard.writeText(targetUrl);
+        alert('共有URLが長いため、クリップボードにコピーしました！\nLINEのトーク画面を開き、そのまま貼り付けて送信してください。');
+        return;
+      } catch (_) {}
+    }
+
+    const lineUrl = createLineShareUrl(targetUrl, schedules.length);
+    window.location.href = lineUrl;
   };
 
   const handleCopyShareLink = async () => {
@@ -785,15 +817,24 @@ export default function ScheduleCalendarView({
 
             <div className="space-y-2 pt-1">
               {/* LINEで直接送る */}
-              <a
-                href={createLineShareUrl(shortShareUrl || generateFamilyShareUrl(schedules), schedules.length)}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="w-full bg-[#06C755] hover:bg-[#05b34c] active:scale-95 text-white font-black py-3.5 px-4 rounded-xl shadow-md flex items-center justify-center gap-2 transition text-xs"
+              <button
+                type="button"
+                onClick={handleSendToLine}
+                disabled={isGeneratingShortUrl}
+                className="w-full bg-[#06C755] hover:bg-[#05b34c] active:scale-95 text-white font-black py-3.5 px-4 rounded-xl shadow-md flex items-center justify-center gap-2 transition text-xs disabled:opacity-75 disabled:cursor-wait"
               >
-                <Share2 className="w-4 h-4" />
-                <span>{isGeneratingShortUrl ? '短縮リンク作成中...' : 'LINEで家族に送る'}</span>
-              </a>
+                {isGeneratingShortUrl ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span>短縮リンクを準備中...</span>
+                  </>
+                ) : (
+                  <>
+                    <Share2 className="w-4 h-4" />
+                    <span>LINEで家族に送る</span>
+                  </>
+                )}
+              </button>
 
               {/* リンクをコピー */}
               <button

@@ -24,6 +24,9 @@ import {
   CheckSquare,
   Compass,
   Edit2,
+  Share2,
+  Copy,
+  X,
 } from 'lucide-react';
 import RouteMap from './RouteMap';
 import PlaceAutocompleteInput from './PlaceAutocompleteInput';
@@ -32,7 +35,12 @@ import ScheduleImageImporter from './ScheduleImageImporter';
 import ScheduleCalendarView from './ScheduleCalendarView';
 import MatchWeatherChecklist from './MatchWeatherChecklist';
 import GoogleMapsKeyModal from './GoogleMapsKeyModal';
-import { parseFamilyShareUrl, mergeImportedEvents } from './scheduleStore';
+import {
+  parseFamilyShareUrl,
+  mergeImportedEvents,
+  getSavedSchedules,
+  CATEGORY_COLORS,
+} from './scheduleStore';
 import { fetchNearbySpots } from './nearbySpots';
 import {
   getSavedGoogleMapsApiKey,
@@ -56,6 +64,7 @@ import {
 const STORAGE_KEYS = {
   ORIGIN: 'soccer_pickup_origin_v1',
   PRESETS: 'soccer_pickup_presets_v1',
+  RECENT_VENUES: 'soccer_pickup_recent_venues_v1',
   BUFFER: 'soccer_pickup_buffer_v1',
   ARRIVAL_TIME: 'soccer_pickup_arrival_v1',
   TRAVEL_DATE: 'soccer_pickup_date_v1',
@@ -69,11 +78,10 @@ const DEFAULT_DESTINATION = '埼玉県さいたま市緑区大門2372-1';
 
 const DEFAULT_PRESETS = [
   { id: 'preset-1', name: 'J-foot浦和美園', query: '埼玉県さいたま市緑区大門2372-1' },
-  { id: 'preset-2', name: '浦和学院高等学校 (サッカー場)', query: '埼玉県さいたま市緑区代山172' },
-  { id: 'preset-3', name: '味の素スタジアム (調布)', query: '東京都調布市西町376-3' },
-  { id: 'preset-4', name: '駒沢オリンピック公園', query: '東京都世田谷区駒沢公園1-1' },
-  { id: 'preset-5', name: '大井ふ頭中央海浜公園', query: '東京都品川区八潮4-1-19' },
-  { id: 'preset-6', name: '新横浜公園 (日産フィールド)', query: '神奈川県横浜市港北区小机町3300' },
+  { id: 'preset-2', name: '浦和学院高校 (サッカー場)', query: '埼玉県さいたま市緑区代山172' },
+  { id: 'preset-3', name: '埼スタ2002 第2グラウンド', query: '埼玉県さいたま市緑区美園2-1' },
+  { id: 'preset-4', name: 'レッズランド (桜区)', query: '埼玉県さいたま市桜区下大久保1771' },
+  { id: 'preset-5', name: 'SFAフットボールセンター (加須)', query: '埼玉県加須市騎西598-1' },
 ];
 
 const BUFFER_OPTIONS = [
@@ -375,13 +383,26 @@ export default function App() {
       const saved = localStorage.getItem(STORAGE_KEYS.PRESETS);
       if (!saved) return DEFAULT_PRESETS;
       const parsed = JSON.parse(saved);
-      // 以前の初期プリセット（味の素スタジアムが先頭だった場合）は新デフォルトに移行
-      if (Array.isArray(parsed) && parsed[0]?.name === '味の素スタジアム (調布)') {
+      // 以前の初期プリセット（味の素スタジアム等が含まれていた場合）は埼玉・関東圏の新デフォルトに移行
+      if (
+        Array.isArray(parsed) &&
+        parsed.some((p) => p?.name === '味の素スタジアム (調布)' || p?.name === '新横浜公園 (日産フィールド)')
+      ) {
         return DEFAULT_PRESETS;
       }
       return parsed;
     } catch {
       return DEFAULT_PRESETS;
+    }
+  });
+
+  // 最近検索・利用した会場履歴
+  const [recentVenues, setRecentVenues] = useState(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEYS.RECENT_VENUES);
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
     }
   });
 
@@ -429,8 +450,15 @@ export default function App() {
   const [manualDriveMinutes, setManualDriveMinutes] = useState('');
   // 乗換案内で確認した電車の所要時間を直接入力して上書きできるオプション (電車)
   const [manualTransitMinutes, setManualTransitMinutes] = useState('');
+  // 所要時間の手動微調整フォーム展開ステート（デフォルトは折りたたみ）
+  const [showManualOverride, setShowManualOverride] = useState(false);
   // 電車ルートの詳細ステップ展開ステート
   const [showTransitDetails, setShowTransitDetails] = useState(false);
+
+  // 「試合日程」から逆算ナビに連携された現在選択中の試合イベント
+  const [activeScheduleEvent, setActiveScheduleEvent] = useState(null);
+  // 逆算結果単体のコピー完了フィードバック
+  const [singleShareCopied, setSingleShareCopied] = useState(false);
 
   // プリセット追加フォーム用
   const [showAddPreset, setShowAddPreset] = useState(false);
@@ -780,24 +808,82 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [travelDate, arrivalTime, bufferMinutes, transportMode]);
 
+  // 最近利用した会場を自動記録（最大8件）
+  const recordRecentVenue = useCallback((venueStr) => {
+    const clean = (venueStr || '').trim();
+    if (!clean || clean.length < 2) return;
+    setRecentVenues((prev) => {
+      const filtered = prev.filter((v) => v !== clean);
+      const next = [clean, ...filtered].slice(0, 8);
+      try {
+        localStorage.setItem(STORAGE_KEYS.RECENT_VENUES, JSON.stringify(next));
+      } catch (_) {}
+      return next;
+    });
+  }, []);
+
+  // 試合日程に登録されている会場 ＆ 最近検索した会場を自動抽出（プリセット重複除外）
+  const autoDiscoveredVenues = useMemo(() => {
+    const savedScheds = getSavedSchedules();
+    const presetQueries = new Set(presets.map((p) => p.query.trim()));
+    const presetNames = new Set(presets.map((p) => p.name.trim()));
+    const seen = new Set();
+    const list = [];
+
+    // 1. 試合日程に登録されている会場（直近・未来優先）
+    savedScheds.forEach((s) => {
+      const v = (s.venue || '').trim();
+      if (!v || seen.has(v) || presetQueries.has(v) || presetNames.has(v)) return;
+      seen.add(v);
+      list.push({ id: `sched-venue-${v}`, name: v, query: v, source: 'schedule' });
+    });
+
+    // 2. 最近検索した会場履歴
+    recentVenues.forEach((v) => {
+      const clean = (v || '').trim();
+      if (!clean || seen.has(clean) || presetQueries.has(clean) || presetNames.has(clean)) return;
+      seen.add(clean);
+      list.push({ id: `recent-venue-${clean}`, name: clean, query: clean, source: 'recent' });
+    });
+
+    return list.slice(0, 8);
+  }, [presets, recentVenues, scheduleRefreshKey, activeTab]);
+
+  // 今後の試合予定件数（ボトムナビバッジ用）
+  const upcomingScheduleCount = useMemo(() => {
+    const todayStr = formatLocalDate(new Date());
+    return getSavedSchedules().filter((s) => s.dateIso >= todayStr).length;
+  }, [scheduleRefreshKey, activeTab]);
+
   const handleSelectPreset = (preset) => {
     setSelectedPresetId(preset.id);
     setDestination(preset.query);
     setManualDriveMinutes('');
     setManualTransitMinutes('');
+    recordRecentVenue(preset.query);
     calculateRoute(origin, preset.query);
   };
 
-  const handleApplySchedule = ({ destination: newDest, travelDate: newDate, arrivalTime: newTime }) => {
+  const handleApplySchedule = ({ destination: newDest, travelDate: newDate, arrivalTime: newTime, eventName }) => {
     if (newDest) {
       setDestination(newDest);
       setSelectedPresetId(null);
+      recordRecentVenue(newDest);
     }
     if (newDate) {
       setTravelDate(newDate);
     }
     if (newTime) {
       setArrivalTime(newTime);
+    }
+    if (eventName) {
+      setActiveScheduleEvent({
+        title: eventName,
+        dateIso: newDate || travelDate,
+        meetingTime: newTime || arrivalTime,
+        venue: newDest || destination,
+        category: '試合',
+      });
     }
     setManualDriveMinutes('');
     setManualTransitMinutes('');
@@ -807,9 +893,11 @@ export default function App() {
 
   const handleSelectScheduleForCalculation = useCallback(
     (sched) => {
+      setActiveScheduleEvent(sched);
       if (sched.venue) {
         setDestination(sched.venue);
         setSelectedPresetId(null);
+        recordRecentVenue(sched.venue);
       }
       if (sched.dateIso) {
         setTravelDate(sched.dateIso);
@@ -834,8 +922,24 @@ export default function App() {
         }, 80);
       });
     },
-    [origin, destination, calculateRoute]
+    [origin, destination, calculateRoute, recordRecentVenue]
   );
+
+  // 現在入力中の会場をワンタップでプリセットにピン留め追加
+  const handleQuickPinCurrentVenue = () => {
+    const clean = destination.trim();
+    if (!clean) return;
+    if (presets.some((p) => p.query === clean || p.name === clean)) return;
+    const shortName = clean.replace(/^.+?[都道府県][^市区町村]+?[市区町村]/, '').trim() || clean;
+    const newItem = {
+      id: `preset-${Date.now()}`,
+      name: shortName.slice(0, 18),
+      query: clean,
+    };
+    const updated = [newItem, ...presets];
+    setPresets(updated);
+    setSelectedPresetId(newItem.id);
+  };
 
   const handleAddPreset = (e) => {
     e.preventDefault();
@@ -1023,13 +1127,83 @@ export default function App() {
 
   const formattedDateLabel = formatJapaneseDateLabel(travelDate);
 
+  // 選択中の試合がある場合、キックオフ2時間30分前の時刻を算出
+  const activeMatchKoMinus150 = useMemo(() => {
+    if (!activeScheduleEvent?.kickoffTime) return null;
+    return subtractMinutesFromTime(activeScheduleEvent.kickoffTime, 150).formatted;
+  }, [activeScheduleEvent]);
+
+  // 📤 1試合分の送迎・出発予定テキストを組み立て（家族・相乗り連絡用）
+  const buildSingleDepartureShareText = useCallback(() => {
+    const depStr = activeDepartureInfo ? activeDepartureInfo.formatted : '--:--';
+    const arrStr = targetArrivalMinusBuffer.formatted;
+    const modeLabel = isTrainMode ? '🚃 電車移動' : '🚗 車送迎';
+    const matchHeader = activeScheduleEvent
+      ? `⚽ 【${activeScheduleEvent.category || '試合'}】${activeScheduleEvent.title}\n`
+      : '';
+    const koInfo = activeScheduleEvent?.kickoffTime ? ` / ${activeScheduleEvent.kickoffTime} KO` : '';
+    const durInfo = isTrainMode
+      ? `約${activeEstimatedMinutes || '--'}分`
+      : driveRange
+      ? `${driveRange.formattedShort}${routeResult?.distanceKm ? ` (約${routeResult.distanceKm}km)` : ''}`
+      : `約${activeEstimatedMinutes || '--'}分`;
+    const mapUrl = isTrainMode ? googleMapsTransitNavUrl : googleMapsNavUrl;
+
+    return [
+      `📣 サッカー送迎・出発予定 (${modeLabel})`,
+      `${matchHeader}📅 ${formattedDateLabel}`,
+      `🏠 ${depStr} 自宅出発${!isTrainMode ? '（渋滞考慮・遅くとも）' : ''}`,
+      `🏟️ ${arrStr} 現地到着目安（${arrivalTime}集合${koInfo}）`,
+      `📍 会場: ${destination}`,
+      `⏱️ 所要目安: ${durInfo}`,
+      `🗺️ ルート: ${mapUrl}`,
+    ].join('\n');
+  }, [
+    activeDepartureInfo,
+    targetArrivalMinusBuffer.formatted,
+    isTrainMode,
+    activeScheduleEvent,
+    formattedDateLabel,
+    arrivalTime,
+    destination,
+    activeEstimatedMinutes,
+    driveRange,
+    routeResult?.distanceKm,
+    googleMapsTransitNavUrl,
+    googleMapsNavUrl,
+  ]);
+
+  // 📤 この送迎予定をLINEで送る
+  const handleSendSingleDepartureToLine = useCallback(() => {
+    const text = buildSingleDepartureShareText();
+    const encoded = encodeURIComponent(text);
+    const isMobile = typeof navigator !== 'undefined' && /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+    if (isMobile) {
+      window.location.href = `line://msg/text/${encoded}`;
+    } else {
+      window.open(`https://line.me/R/share?text=${encoded}`, '_blank', 'noopener,noreferrer');
+    }
+  }, [buildSingleDepartureShareText]);
+
+  // 📋 この送迎予定テキストをコピー
+  const handleCopySingleDeparture = useCallback(async () => {
+    const text = buildSingleDepartureShareText();
+    try {
+      await navigator.clipboard.writeText(text);
+      setSingleShareCopied(true);
+      setTimeout(() => setSingleShareCopied(false), 2500);
+    } catch (_) {
+      window.prompt('以下の送迎予定テキストをコピーしてください:', text);
+    }
+  }, [buildSingleDepartureShareText]);
+
   return (
     <div className="min-h-screen bg-slate-100 flex flex-col items-center justify-start pb-12">
       {/* スマホ幅コンテナ */}
       <div className="w-full max-w-md bg-slate-50 min-h-screen shadow-xl flex flex-col">
-        {/* ヘッダー (車: エメラルド, 電車: インディゴ) */}
+        {/* スリムヘッダー (下部ボトムナビへの一本化により上部空間をスッキリ確保) */}
         <header
-          className={`text-white px-5 pt-5 pb-4 shadow-md sticky top-0 z-30 transition-colors duration-300 ${
+          className={`text-white px-4 py-3.5 shadow-md sticky top-0 z-30 transition-colors duration-300 ${
             isTrainMode
               ? 'bg-gradient-to-r from-indigo-800 to-indigo-600'
               : 'bg-gradient-to-r from-emerald-700 to-emerald-600'
@@ -1037,16 +1211,16 @@ export default function App() {
         >
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2.5">
-              <div className="w-9 h-9 rounded-xl bg-white/15 backdrop-blur flex items-center justify-center shadow-inner">
-                <span className="text-xl" role="img" aria-label="icon">
+              <div className="w-8 h-8 rounded-xl bg-white/15 backdrop-blur flex items-center justify-center shadow-inner">
+                <span className="text-lg" role="img" aria-label="icon">
                   {isTrainMode ? '🚃' : '⚽'}
                 </span>
               </div>
               <div>
-                <h1 className="text-lg font-extrabold tracking-tight leading-tight">
+                <h1 className="text-base font-extrabold tracking-tight leading-tight">
                   サッカー送迎 出発逆算ナビ
                 </h1>
-                <p className={`text-[11px] font-medium ${isTrainMode ? 'text-indigo-200' : 'text-emerald-100'}`}>
+                <p className={`text-[10px] font-medium ${isTrainMode ? 'text-indigo-200' : 'text-emerald-100'}`}>
                   {isTrainMode ? '移動日・電車乗換案内連携' : '移動日・Googleマップ渋滞予測連携'}
                 </p>
               </div>
@@ -1073,88 +1247,13 @@ export default function App() {
                 title="再計算"
               >
                 <RotateCcw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
-                <span>再計算</span>
+                <span className="sr-only sm:not-sr-only">再計算</span>
               </button>
             </div>
           </div>
         </header>
 
-        {/* 📱 4つの目的別タブバー（逆算ナビ / 試合日程 / 駐車場・周辺 / 持ち物・天気） */}
-        <nav
-          className={`text-white px-2 py-1.5 shadow-md sticky top-[68px] z-20 grid grid-cols-4 gap-1 transition-colors duration-300 ${
-            isTrainMode ? 'bg-indigo-900' : 'bg-emerald-800'
-          }`}
-        >
-          <button
-            type="button"
-            onClick={() => setActiveTab('calc')}
-            className={`py-2 px-1 text-center rounded-xl text-xs font-black transition flex items-center justify-center gap-1 ${
-              activeTab === 'calc'
-                ? isTrainMode
-                  ? 'bg-white text-indigo-950 shadow-md scale-[1.02]'
-                  : 'bg-white text-emerald-950 shadow-md scale-[1.02]'
-                : isTrainMode
-                ? 'text-indigo-200 hover:bg-white/10'
-                : 'text-emerald-100 hover:bg-white/10'
-            }`}
-          >
-            {isTrainMode ? <Train className="w-3.5 h-3.5" /> : <Car className="w-3.5 h-3.5" />}
-            <span className="truncate">逆算ナビ</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setActiveTab('schedule')}
-            className={`py-2 px-1 text-center rounded-xl text-xs font-black transition flex items-center justify-center gap-1 ${
-              activeTab === 'schedule'
-                ? isTrainMode
-                  ? 'bg-white text-indigo-950 shadow-md scale-[1.02]'
-                  : 'bg-white text-emerald-950 shadow-md scale-[1.02]'
-                : isTrainMode
-                ? 'text-indigo-200 hover:bg-white/10'
-                : 'text-emerald-100 hover:bg-white/10'
-            }`}
-          >
-            <CalendarCheck className="w-3.5 h-3.5" />
-            <span className="truncate">試合日程</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setActiveTab('spots')}
-            className={`py-2 px-1 text-center rounded-xl text-xs font-black transition flex items-center justify-center gap-1 ${
-              activeTab === 'spots'
-                ? isTrainMode
-                  ? 'bg-white text-indigo-950 shadow-md scale-[1.02]'
-                  : 'bg-white text-emerald-950 shadow-md scale-[1.02]'
-                : isTrainMode
-                ? 'text-indigo-200 hover:bg-white/10'
-                : 'text-emerald-100 hover:bg-white/10'
-            }`}
-          >
-            <MapPin className="w-3.5 h-3.5" />
-            <span className="truncate">{isTrainMode ? '駅・周辺' : '周辺'}</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setActiveTab('checklist')}
-            className={`py-2 px-1 text-center rounded-xl text-xs font-black transition flex items-center justify-center gap-1 ${
-              activeTab === 'checklist'
-                ? isTrainMode
-                  ? 'bg-white text-indigo-950 shadow-md scale-[1.02]'
-                  : 'bg-white text-emerald-950 shadow-md scale-[1.02]'
-                : isTrainMode
-                ? 'text-indigo-200 hover:bg-white/10'
-                : 'text-emerald-100 hover:bg-white/10'
-            }`}
-          >
-            <CheckSquare className="w-3.5 h-3.5" />
-            <span className="truncate">持ち物</span>
-          </button>
-        </nav>
-
-        <main className="flex-1 px-4 py-4 space-y-4 pb-28">
+        <main className="flex-1 px-4 py-3.5 space-y-3.5 pb-28">
           {/* 👨‍👩‍👦 家族同期受信トーストバナー */}
           {familySyncToast && (
             <div className="bg-gradient-to-r from-emerald-600 to-teal-600 text-white rounded-2xl p-4 shadow-lg flex items-center justify-between gap-3 border border-emerald-400">
@@ -1191,7 +1290,7 @@ export default function App() {
                   type="button"
                   data-testid="mode-select-car"
                   onClick={() => setTransportMode('car')}
-                  className={`flex-1 py-2.5 px-3 rounded-xl font-black text-xs flex items-center justify-center gap-1.5 transition active:scale-95 ${
+                  className={`flex-1 py-2 px-3 rounded-xl font-black text-xs flex items-center justify-center gap-1.5 transition active:scale-95 ${
                     !isTrainMode
                       ? 'bg-emerald-700 text-white shadow-md'
                       : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
@@ -1204,7 +1303,7 @@ export default function App() {
                   type="button"
                   data-testid="mode-select-train"
                   onClick={() => setTransportMode('train')}
-                  className={`flex-1 py-2.5 px-3 rounded-xl font-black text-xs flex items-center justify-center gap-1.5 transition active:scale-95 ${
+                  className={`flex-1 py-2 px-3 rounded-xl font-black text-xs flex items-center justify-center gap-1.5 transition active:scale-95 ${
                     isTrainMode
                       ? 'bg-indigo-600 text-white shadow-md'
                       : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
@@ -1214,6 +1313,88 @@ export default function App() {
                   <span>🚃 電車で行く</span>
                 </button>
               </div>
+
+              {/* ⚽ 試合日程から選択中の試合バナー（どの試合を計算中か一目で把握＆KO 2.5h前切替） */}
+              {activeScheduleEvent && (
+                <div className="bg-white rounded-2xl p-3 shadow-sm border-2 border-emerald-500/80 space-y-2">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <span className="text-[10px] font-black px-2 py-0.5 rounded-md bg-emerald-600 text-white">
+                          ⚽ 選択中の試合
+                        </span>
+                        {activeScheduleEvent.category && (
+                          <span
+                            className={`text-[10px] font-black px-2 py-0.5 rounded-md border ${
+                              (CATEGORY_COLORS[activeScheduleEvent.category] || CATEGORY_COLORS.その他).badge
+                            }`}
+                          >
+                            {activeScheduleEvent.category}
+                          </span>
+                        )}
+                        <span className="text-[11px] font-extrabold text-slate-600">
+                          {activeScheduleEvent.dateLabel || activeScheduleEvent.dateIso}
+                        </span>
+                      </div>
+                      <div className="text-sm font-black text-slate-900 truncate mt-1">
+                        {activeScheduleEvent.title}
+                      </div>
+                      {activeScheduleEvent.notes && !activeScheduleEvent.notes.startsWith('読み取り元:') && (
+                        <div className="text-[11px] font-bold text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-2 py-0.5 mt-1 truncate">
+                          📝 {activeScheduleEvent.notes}
+                        </div>
+                      )}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setActiveScheduleEvent(null)}
+                      className="p-1 text-slate-400 hover:text-slate-600 rounded-lg shrink-0"
+                      title="試合選択を解除"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+
+                  {/* キックオフ時刻がある場合: 集合時刻基準 vs KO 2.5時間前到着基準 のワンタップ切替 */}
+                  {activeScheduleEvent.kickoffTime && activeMatchKoMinus150 && (
+                    <div className="pt-1.5 border-t border-slate-100 flex items-center justify-between gap-1.5 flex-wrap">
+                      <span className="text-[10px] font-extrabold text-slate-500">
+                        到着目標の基準 ({activeScheduleEvent.kickoffTime} KO):
+                      </span>
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setArrivalTime(activeScheduleEvent.meetingTime || '09:00');
+                            if (bufferMinutes === 0) setBufferMinutes(15);
+                          }}
+                          className={`px-2.5 py-1 rounded-lg text-[11px] font-black border transition ${
+                            arrivalTime === activeScheduleEvent.meetingTime
+                              ? 'bg-emerald-600 text-white border-emerald-600 shadow-xs'
+                              : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
+                          }`}
+                        >
+                          🕒 集合 {activeScheduleEvent.meetingTime}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setArrivalTime(activeMatchKoMinus150);
+                            setBufferMinutes(0);
+                          }}
+                          className={`px-2.5 py-1 rounded-lg text-[11px] font-black border transition ${
+                            arrivalTime === activeMatchKoMinus150 && bufferMinutes === 0
+                              ? 'bg-amber-500 text-slate-950 border-amber-500 shadow-xs'
+                              : 'bg-amber-50 text-amber-900 border-amber-200 hover:bg-amber-100'
+                          }`}
+                        >
+                          ⚡ KO 2.5h前 ({activeMatchKoMinus150}着)
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
 
               {/* 1. 最重要: 出発時刻 逆算結果カード */}
               <section
@@ -1232,7 +1413,9 @@ export default function App() {
                   <span className="flex items-center gap-1.5 flex-wrap">
                     <Calendar className={`w-3.5 h-3.5 shrink-0 ${isTrainMode ? 'text-indigo-300' : 'text-emerald-300'}`} />
                     <span data-testid="summary-date-label">{formattedDateLabel}</span>
-                    <span>{arrivalTime}集合（{bufferMinutes}分前着）</span>
+                    <span>
+                      {arrivalTime}目標{bufferMinutes > 0 ? `（${bufferMinutes}分前着）` : '（バッファ0分）'}
+                    </span>
                   </span>
                   {routeResult && (
                     <span
@@ -1466,8 +1649,31 @@ export default function App() {
                   </div>
                 )}
 
-                {/* 連携ボタン群 (車 vs 電車) */}
-                <div className="mt-4 space-y-2.5">
+                {/* 連携ボタン群 (車 vs 電車 + 📤 LINE送迎予定共有) */}
+                <div className="mt-4 space-y-2">
+                  {/* 📤 この送迎予定（出発時間・現地着・マップ）を家族や相乗り仲間にLINE共有 */}
+                  {activeDepartureInfo && (
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={handleSendSingleDepartureToLine}
+                        className="flex-1 bg-[#06C755] hover:bg-[#05b34c] active:scale-[0.99] text-white font-black py-2.5 px-3 rounded-2xl shadow-md flex items-center justify-center gap-1.5 transition text-xs"
+                      >
+                        <Share2 className="w-4 h-4 shrink-0" />
+                        <span>この送迎予定をLINEで送る</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleCopySingleDeparture}
+                        className="bg-white/15 hover:bg-white/25 active:scale-95 text-white font-extrabold py-2.5 px-3 rounded-2xl border border-white/25 flex items-center justify-center gap-1 transition text-xs shrink-0"
+                        title="送迎予定の文章をコピー"
+                      >
+                        <Copy className="w-3.5 h-3.5" />
+                        <span>{singleShareCopied ? '✓ コピー済' : 'コピー'}</span>
+                      </button>
+                    </div>
+                  )}
+
                   {isTrainMode ? (
                     <>
                       {/* 🟣 Yahoo!乗換案内 到着指定連携ボタン */}
@@ -1477,47 +1683,19 @@ export default function App() {
                         href={yahooTransitUrl}
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="w-full bg-white hover:bg-indigo-50 active:scale-[0.99] text-indigo-950 font-black py-3 px-4 rounded-2xl shadow-md flex items-center justify-between transition text-xs border border-indigo-200"
+                        className="w-full bg-white hover:bg-indigo-50 active:scale-[0.99] text-indigo-950 font-black py-2.5 px-3.5 rounded-2xl shadow-md flex items-center justify-between transition text-xs border border-indigo-200"
                       >
                         <div className="flex items-center gap-2 text-left">
-                          <div className="w-7 h-7 rounded-lg bg-red-100 text-red-600 flex items-center justify-center font-black text-sm shrink-0">
+                          <div className="w-6 h-6 rounded-lg bg-red-100 text-red-600 flex items-center justify-center font-black text-xs shrink-0">
                             Y!
                           </div>
                           <div>
                             <div className="text-xs font-black text-slate-900">
                               Yahoo!乗換案内で「{formattedDateLabel} {targetArrivalMinusBuffer.formatted}着」を調べる
                             </div>
-                            <div className="text-[10px] font-bold text-slate-500">
-                              ダイヤ・乗り換え番線・定期代対応の直通便
-                            </div>
                           </div>
                         </div>
                         <ExternalLink className="w-4 h-4 text-indigo-700 shrink-0 ml-1" />
-                      </a>
-
-                      {/* 🔵 Googleマップ 電車ルート連携ボタン */}
-                      <a
-                        id="google-maps-transit-btn"
-                        data-testid="google-maps-transit-btn"
-                        href={googleMapsTransitCheckUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="w-full bg-indigo-500/20 hover:bg-indigo-500/30 text-white font-black py-3 px-4 rounded-2xl border border-indigo-300/40 flex items-center justify-between transition text-xs"
-                      >
-                        <div className="flex items-center gap-2 text-left">
-                          <div className="w-7 h-7 rounded-lg bg-white/20 text-indigo-200 flex items-center justify-center shrink-0">
-                            <Train className="w-4 h-4" />
-                          </div>
-                          <div>
-                            <div className="text-xs font-black text-white">
-                              Googleマップで電車ルート・地図を確認
-                            </div>
-                            <div className="text-[10px] font-medium text-indigo-200">
-                              徒歩ルート・駅構内図を含めて表示
-                            </div>
-                          </div>
-                        </div>
-                        <ExternalLink className="w-4 h-4 text-indigo-200 shrink-0 ml-1" />
                       </a>
 
                       {/* 🟡 Googleマップ 今すぐ電車ナビ開始 */}
@@ -1527,11 +1705,11 @@ export default function App() {
                         href={googleMapsTransitNavUrl}
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="w-full bg-amber-400 hover:bg-amber-300 active:scale-[0.99] text-slate-950 font-black py-3.5 px-4 rounded-2xl shadow-md flex items-center justify-center gap-2 transition text-base"
+                        className="w-full bg-amber-400 hover:bg-amber-300 active:scale-[0.99] text-slate-950 font-black py-3 px-4 rounded-2xl shadow-md flex items-center justify-center gap-2 transition text-sm"
                       >
-                        <Navigation className="w-5 h-5 fill-slate-950" />
+                        <Navigation className="w-4 h-4 fill-slate-950" />
                         <span>Googleマップで今すぐ乗換案内を開始</span>
-                        <ChevronRight className="w-5 h-5" />
+                        <ChevronRight className="w-4 h-4" />
                       </a>
                     </>
                   ) : (
@@ -1543,18 +1721,15 @@ export default function App() {
                         href={googleMapsTrafficCheckUrl}
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="w-full bg-white hover:bg-emerald-50 active:scale-[0.99] text-emerald-950 font-black py-3 px-4 rounded-2xl shadow-md flex items-center justify-between transition text-xs border border-emerald-200"
+                        className="w-full bg-white hover:bg-emerald-50 active:scale-[0.99] text-emerald-950 font-black py-2.5 px-3.5 rounded-2xl shadow-md flex items-center justify-between transition text-xs border border-emerald-200"
                       >
                         <div className="flex items-center gap-2 text-left">
-                          <div className="w-7 h-7 rounded-lg bg-emerald-100 text-emerald-700 flex items-center justify-center shrink-0">
-                            <Clock className="w-4 h-4" />
+                          <div className="w-6 h-6 rounded-lg bg-emerald-100 text-emerald-700 flex items-center justify-center shrink-0">
+                            <Clock className="w-3.5 h-3.5" />
                           </div>
                           <div>
                             <div className="text-xs font-black text-slate-900">
                               Googleマップで「{formattedDateLabel} {targetArrivalMinusBuffer.formatted}着」の渋滞予測を見る
-                            </div>
-                            <div className="text-[10px] font-bold text-slate-500">
-                              指定日時のGoogle統計渋滞・所要時間レンジを直接確認
                             </div>
                           </div>
                         </div>
@@ -1567,11 +1742,11 @@ export default function App() {
                         href={googleMapsNavUrl}
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="w-full bg-amber-400 hover:bg-amber-300 active:scale-[0.99] text-slate-950 font-black py-3.5 px-4 rounded-2xl shadow-md flex items-center justify-center gap-2 transition text-base"
+                        className="w-full bg-amber-400 hover:bg-amber-300 active:scale-[0.99] text-slate-950 font-black py-3 px-4 rounded-2xl shadow-md flex items-center justify-center gap-2 transition text-sm"
                       >
-                        <Navigation className="w-5 h-5 fill-slate-950" />
+                        <Navigation className="w-4 h-4 fill-slate-950" />
                         <span>Googleマップで今すぐナビ開始</span>
-                        <ChevronRight className="w-5 h-5" />
+                        <ChevronRight className="w-4 h-4" />
                       </a>
                     </>
                   )}
@@ -1602,6 +1777,7 @@ export default function App() {
                       setSelectedPresetId(null);
                       setManualDriveMinutes('');
                       setManualTransitMinutes('');
+                      recordRecentVenue(item.title || item.fullQuery, item.fullQuery);
                       calculateRoute(origin, item.fullQuery);
                     }}
                     placeholder="会場名・公園名・学校名を入力（例: 西武台第2グラウンド、埼スタ）"
@@ -1624,6 +1800,7 @@ export default function App() {
                               setSelectedPresetId(null);
                               setManualDriveMinutes('');
                               setManualTransitMinutes('');
+                              recordRecentVenue(c.name, c.name);
                               calculateRoute(origin, c.name);
                             }}
                             className="text-xs bg-white hover:bg-emerald-100 text-slate-800 font-bold px-2.5 py-1.5 rounded-xl border border-emerald-300 shadow-sm transition active:scale-95 text-left"
@@ -1636,20 +1813,34 @@ export default function App() {
                   )}
                 </div>
 
-                {/* 会場クイック選択チップ（横スクロール） */}
+                {/* 会場クイック選択チップ（日程の会場・最近の会場・よく行く会場を統合） */}
                 <div>
-                  <div className="flex items-center justify-between mb-1.5">
+                  <div className="flex items-center justify-between mb-1.5 gap-2">
                     <span className="text-[11px] font-extrabold text-slate-600 flex items-center gap-1">
                       <Sparkles className="w-3.5 h-3.5 text-amber-500" />
-                      よく行く会場（タップで即選択）
+                      よく行く会場・日程の会場（タップで即選択）
                     </span>
-                    <button
-                      type="button"
-                      onClick={() => setShowAddPreset(!showAddPreset)}
-                      className="text-[11px] font-bold text-emerald-700 hover:underline flex items-center gap-0.5"
-                    >
-                      <Plus className="w-3 h-3" /> 会場を追加
-                    </button>
+                    <div className="flex items-center gap-2 shrink-0">
+                      {destination &&
+                        destination.trim() &&
+                        !presets.some((p) => p.query === destination.trim() || p.name === destination.trim()) && (
+                          <button
+                            type="button"
+                            onClick={handleQuickPinCurrentVenue}
+                            className="text-[10px] font-extrabold text-amber-700 bg-amber-50 hover:bg-amber-100 border border-amber-200 px-2 py-0.5 rounded-lg transition active:scale-95"
+                            title="現在入力中の会場をよく行く会場にピン留め保存"
+                          >
+                            ⭐ 現在の会場を保存
+                          </button>
+                        )}
+                      <button
+                        type="button"
+                        onClick={() => setShowAddPreset(!showAddPreset)}
+                        className="text-[11px] font-bold text-emerald-700 hover:underline flex items-center gap-0.5"
+                      >
+                        <Plus className="w-3 h-3" /> 追加
+                      </button>
+                    </div>
                   </div>
 
                   {/* プリセット登録フォーム展開 */}
@@ -1698,6 +1889,41 @@ export default function App() {
                         </button>
                       </div>
                     </form>
+                  )}
+
+                  {/* 自動検出された「📅 日程の会場」「🕒 最近の会場」チップ */}
+                  {autoDiscoveredVenues.length > 0 && (
+                    <div
+                      className="flex items-center gap-1.5 overflow-x-auto pb-1.5 mb-1"
+                      style={{ scrollbarWidth: 'none' }}
+                    >
+                      {autoDiscoveredVenues.map((v) => {
+                        const isSelected = destination === v.query;
+                        const isFromSchedule = v.source === 'schedule';
+                        return (
+                          <button
+                            key={v.id}
+                            type="button"
+                            onClick={() => handleSelectPreset(v)}
+                            className={`px-2.5 py-1.5 rounded-xl text-xs font-extrabold whitespace-nowrap transition border active:scale-95 flex items-center gap-1 shrink-0 ${
+                              isSelected
+                                ? 'bg-emerald-600 text-white border-emerald-600 shadow-sm'
+                                : isFromSchedule
+                                ? 'bg-emerald-50/90 text-emerald-800 hover:bg-emerald-100 border-emerald-200'
+                                : 'bg-amber-50/80 text-amber-900 hover:bg-amber-100 border-amber-200'
+                            }`}
+                            title={
+                              isFromSchedule
+                                ? `試合日程に登録されている会場: ${v.query}`
+                                : `最近検索した会場: ${v.query}`
+                            }
+                          >
+                            <span className="text-[10px]">{isFromSchedule ? '📅' : '🕒'}</span>
+                            <span>{v.name}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
                   )}
 
                   <div
@@ -1879,54 +2105,79 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* 所要時間の手動上書き入力 (車 / 電車) */}
-                <div className="bg-slate-50 border border-slate-200/90 rounded-2xl p-3">
-                  <div className="flex items-center justify-between mb-1">
-                    <span className="text-[11px] font-extrabold text-slate-700 flex items-center gap-1">
-                      <Clock className="w-3.5 h-3.5 text-slate-500" />
+                {/* 所要時間の手動上書き入力 (スマート折りたたみ対応) */}
+                <div className="bg-slate-50 border border-slate-200/90 rounded-2xl p-2.5">
+                  <div className="flex items-center justify-between">
+                    <button
+                      type="button"
+                      onClick={() => setShowManualOverride((prev) => !prev)}
+                      className="text-[11px] font-extrabold text-slate-600 hover:text-slate-900 flex items-center gap-1 text-left"
+                    >
+                      <Clock className="w-3.5 h-3.5 text-slate-500 shrink-0" />
                       <span>
                         {isTrainMode
-                          ? '乗換案内の所要時間で上書き (任意)'
-                          : 'Googleマップ実測所要時間で上書き (任意)'}
+                          ? '乗換案内の所要時間で手動調整する'
+                          : 'Googleマップ実測時間で手動調整する'}
                       </span>
-                    </span>
-                    {(isTrainMode ? manualTransitMinutes : manualDriveMinutes) && (
+                      {(isTrainMode ? manualTransitMinutes : manualDriveMinutes) && (
+                        <span className="ml-1 px-1.5 py-0.5 rounded-md bg-amber-100 text-amber-800 text-[10px] font-black">
+                          {isTrainMode ? manualTransitMinutes : manualDriveMinutes}分で計算中
+                        </span>
+                      )}
+                    </button>
+                    <div className="flex items-center gap-2">
+                      {(isTrainMode ? manualTransitMinutes : manualDriveMinutes) && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            isTrainMode ? setManualTransitMinutes('') : setManualDriveMinutes('')
+                          }
+                          className="text-[10px] text-rose-600 font-bold hover:underline"
+                        >
+                          解除
+                        </button>
+                      )}
                       <button
                         type="button"
-                        onClick={() =>
-                          isTrainMode ? setManualTransitMinutes('') : setManualDriveMinutes('')
-                        }
-                        className="text-[10px] text-rose-600 font-bold hover:underline"
+                        onClick={() => setShowManualOverride((prev) => !prev)}
+                        className="text-[10px] font-bold text-slate-500 hover:text-slate-800 px-1.5 py-0.5 rounded-md bg-white border border-slate-200"
                       >
-                        クリア
+                        {showManualOverride || Boolean(isTrainMode ? manualTransitMinutes : manualDriveMinutes)
+                          ? '閉じる'
+                          : '入力'}
                       </button>
-                    )}
+                    </div>
                   </div>
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="number"
-                      min="1"
-                      max="360"
-                      placeholder={
-                        isTrainMode
-                          ? '例: 45 (YahooやGoogleで調べた所要時間)'
-                          : '例: 130 (Googleマップの最大時間などを手動反映)'
-                      }
-                      value={isTrainMode ? manualTransitMinutes : manualDriveMinutes}
-                      onChange={(e) =>
-                        isTrainMode
-                          ? setManualTransitMinutes(e.target.value)
-                          : setManualDriveMinutes(e.target.value)
-                      }
-                      className="flex-1 bg-white border border-slate-300 rounded-xl px-3 py-1.5 text-xs font-bold text-slate-900"
-                    />
-                    <span className="text-xs font-bold text-slate-600 shrink-0">分</span>
-                  </div>
-                  <p className="text-[10px] text-slate-500 mt-1">
-                    {isTrainMode
-                      ? '※YahooやGoogleで確認した正確な電車移動分数を入力すると、即座に出発時刻が再計算されます'
-                      : '※Googleマップで調べた最大所要時間（例: 2時間10分なら130分）を入力すれば、その最大時間に合わせて出発時刻を再計算できます'}
-                  </p>
+
+                  {(showManualOverride || Boolean(isTrainMode ? manualTransitMinutes : manualDriveMinutes)) && (
+                    <div className="mt-2 pt-2 border-t border-slate-200/70 space-y-1">
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="number"
+                          min="1"
+                          max="360"
+                          placeholder={
+                            isTrainMode
+                              ? '例: 45 (YahooやGoogleで調べた所要時間)'
+                              : '例: 90 (Googleマップの最大時間などを手動反映)'
+                          }
+                          value={isTrainMode ? manualTransitMinutes : manualDriveMinutes}
+                          onChange={(e) =>
+                            isTrainMode
+                              ? setManualTransitMinutes(e.target.value)
+                              : setManualDriveMinutes(e.target.value)
+                          }
+                          className="flex-1 bg-white border border-slate-300 rounded-xl px-3 py-1.5 text-xs font-bold text-slate-900"
+                        />
+                        <span className="text-xs font-bold text-slate-600 shrink-0">分</span>
+                      </div>
+                      <p className="text-[10px] text-slate-500">
+                        {isTrainMode
+                          ? '※YahooやGoogleで確認した正確な電車移動分数を入力すると、即座に出発時刻が再計算されます'
+                          : '※Googleマップで調べた最大所要時間を入力すれば、その時間に合わせて出発時刻を再計算できます'}
+                      </p>
+                    </div>
+                  )}
                 </div>
 
                 <hr className="border-slate-100" />
@@ -2135,14 +2386,7 @@ export default function App() {
                     <ScheduleImageImporter
                       isOpen={true}
                       onToggleOpen={() => setIsScheduleImporterOpen((p) => !p)}
-                      onApplySchedule={(applied) => {
-                        setDestination(applied.destination);
-                        setTravelDate(applied.travelDate);
-                        setArrivalTime(applied.arrivalTime);
-                        setIsScheduleImporterOpen(false);
-                        setActiveTab('calc');
-                        calculateRoute(origin, applied.destination);
-                      }}
+                      onApplySchedule={handleApplySchedule}
                       onSaveToSchedules={() => {
                         // 保存されたらカレンダーを即時再描画し、モーダルを閉じる
                         setScheduleRefreshKey((k) => k + 1);
@@ -2265,19 +2509,19 @@ export default function App() {
           </footer>
         </main>
 
-        {/* 📱 スマホ用 固定ボトムナビゲーションバー（親指片手操作対応） */}
-        <div className="fixed bottom-0 left-0 right-0 z-40 bg-white/95 backdrop-blur-md border-t border-slate-200/90 py-1.5 px-2 grid grid-cols-4 max-w-md mx-auto shadow-2xl">
+        {/* 📱 スマホ・PC共通 固定ボトムナビゲーションバー（上部タブと一本化・バッジ表示対応） */}
+        <div className="fixed bottom-0 left-0 right-0 z-40 bg-white/95 backdrop-blur-md border-t border-slate-200/90 py-1.5 px-2 grid grid-cols-4 gap-1 max-w-md mx-auto shadow-2xl">
           <button
             type="button"
             onClick={() => {
               setActiveTab('calc');
               window.scrollTo({ top: 0, behavior: 'smooth' });
             }}
-            className={`py-1 flex flex-col items-center justify-center gap-0.5 rounded-xl transition ${
+            className={`py-1.5 flex flex-col items-center justify-center gap-0.5 rounded-2xl transition ${
               activeTab === 'calc'
                 ? isTrainMode
-                  ? 'text-indigo-700 font-extrabold'
-                  : 'text-emerald-700 font-extrabold'
+                  ? 'bg-indigo-50 text-indigo-700 font-extrabold'
+                  : 'bg-emerald-50 text-emerald-700 font-extrabold'
                 : 'text-slate-400 hover:text-slate-600 font-medium'
             }`}
           >
@@ -2295,15 +2539,22 @@ export default function App() {
               setActiveTab('schedule');
               window.scrollTo({ top: 0, behavior: 'smooth' });
             }}
-            className={`py-1 flex flex-col items-center justify-center gap-0.5 rounded-xl transition ${
+            className={`py-1.5 flex flex-col items-center justify-center gap-0.5 rounded-2xl transition relative ${
               activeTab === 'schedule'
                 ? isTrainMode
-                  ? 'text-indigo-700 font-extrabold'
-                  : 'text-emerald-700 font-extrabold'
+                  ? 'bg-indigo-50 text-indigo-700 font-extrabold'
+                  : 'bg-emerald-50 text-emerald-700 font-extrabold'
                 : 'text-slate-400 hover:text-slate-600 font-medium'
             }`}
           >
-            <CalendarCheck className={`w-5 h-5 ${activeTab === 'schedule' ? 'stroke-[2.5]' : ''}`} />
+            <div className="relative">
+              <CalendarCheck className={`w-5 h-5 ${activeTab === 'schedule' ? 'stroke-[2.5]' : ''}`} />
+              {upcomingScheduleCount > 0 && (
+                <span className="absolute -top-1.5 -right-2.5 min-w-[16px] h-4 px-1 rounded-full bg-emerald-600 text-white text-[9px] font-black flex items-center justify-center shadow-sm">
+                  {upcomingScheduleCount}
+                </span>
+              )}
+            </div>
             <span className="text-[10px]">試合日程</span>
           </button>
 
@@ -2313,15 +2564,22 @@ export default function App() {
               setActiveTab('spots');
               window.scrollTo({ top: 0, behavior: 'smooth' });
             }}
-            className={`py-1 flex flex-col items-center justify-center gap-0.5 rounded-xl transition relative ${
+            className={`py-1.5 flex flex-col items-center justify-center gap-0.5 rounded-2xl transition relative ${
               activeTab === 'spots'
                 ? isTrainMode
-                  ? 'text-indigo-700 font-extrabold'
-                  : 'text-emerald-700 font-extrabold'
+                  ? 'bg-indigo-50 text-indigo-700 font-extrabold'
+                  : 'bg-emerald-50 text-emerald-700 font-extrabold'
                 : 'text-slate-400 hover:text-slate-600 font-medium'
             }`}
           >
-            <MapPin className={`w-5 h-5 ${activeTab === 'spots' ? 'stroke-[2.5]' : ''}`} />
+            <div className="relative">
+              <MapPin className={`w-5 h-5 ${activeTab === 'spots' ? 'stroke-[2.5]' : ''}`} />
+              {(isTrainMode ? nearbyStations.length : nearbyParkings.length) > 0 && (
+                <span className="absolute -top-1 -right-2 min-w-[14px] h-3.5 px-1 rounded-full bg-slate-200 text-slate-700 text-[9px] font-extrabold flex items-center justify-center">
+                  {isTrainMode ? nearbyStations.length : nearbyParkings.length}
+                </span>
+              )}
+            </div>
             <span className="text-[10px]">{isTrainMode ? '駅・周辺' : '駐車場'}</span>
           </button>
 
@@ -2331,11 +2589,11 @@ export default function App() {
               setActiveTab('checklist');
               window.scrollTo({ top: 0, behavior: 'smooth' });
             }}
-            className={`py-1 flex flex-col items-center justify-center gap-0.5 rounded-xl transition ${
+            className={`py-1.5 flex flex-col items-center justify-center gap-0.5 rounded-2xl transition ${
               activeTab === 'checklist'
                 ? isTrainMode
-                  ? 'text-indigo-700 font-extrabold'
-                  : 'text-emerald-700 font-extrabold'
+                  ? 'bg-indigo-50 text-indigo-700 font-extrabold'
+                  : 'bg-emerald-50 text-emerald-700 font-extrabold'
                 : 'text-slate-400 hover:text-slate-600 font-medium'
             }`}
           >

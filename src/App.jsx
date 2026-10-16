@@ -382,13 +382,32 @@ export default function App() {
     try {
       const saved = localStorage.getItem(STORAGE_KEYS.PRESETS);
       if (!saved) return DEFAULT_PRESETS;
-      const parsed = JSON.parse(saved);
+      let parsed = JSON.parse(saved);
       // 以前の初期プリセット（味の素スタジアム等が含まれていた場合）は埼玉・関東圏の新デフォルトに移行
       if (
         Array.isArray(parsed) &&
         parsed.some((p) => p?.name === '味の素スタジアム (調布)' || p?.name === '新横浜公園 (日産フィールド)')
       ) {
         return DEFAULT_PRESETS;
+      }
+      // 1文字しか保存されなかったプリセットの自動修復
+      if (Array.isArray(parsed)) {
+        parsed = parsed.map((p) => {
+          if (p && typeof p.name === 'string' && p.name.length <= 1 && p.query && p.query.length > 1) {
+            const cleanQ = p.query.trim();
+            const parts = cleanQ.split(/\s+/);
+            const lastPart = parts[parts.length - 1];
+            const fixedName =
+              parts.length > 1 && lastPart.length >= 2 && /[^\d\-\s丁目番地号]/.test(lastPart)
+                ? lastPart
+                : cleanQ;
+            return {
+              ...p,
+              name: fixedName.length > 20 ? fixedName.slice(0, 19) + '…' : fixedName,
+            };
+          }
+          return p;
+        });
       }
       return parsed;
     } catch {
@@ -930,10 +949,22 @@ export default function App() {
     const clean = destination.trim();
     if (!clean) return;
     if (presets.some((p) => p.query === clean || p.name === clean)) return;
-    const shortName = clean.replace(/^.+?[都道府県][^市区町村]+?[市区町村]/, '').trim() || clean;
+
+    // 表示名：スペースで区切られている場合（例: 「住所 施設名」）は施設名部分を優先
+    const parts = clean.split(/\s+/);
+    let displayName = clean;
+    if (parts.length > 1) {
+      const lastPart = parts[parts.length - 1];
+      // 最後の部分が番地などの数字記号だけでなく施設名（2文字以上）を含んでいればそれを表示名に採用
+      if (lastPart.length >= 2 && /[^\d\-\s丁目番地号]/.test(lastPart)) {
+        displayName = lastPart;
+      }
+    }
+    const shortName = displayName.length > 20 ? displayName.slice(0, 19) + '…' : displayName;
+
     const newItem = {
       id: `preset-${Date.now()}`,
-      name: shortName.slice(0, 18),
+      name: shortName,
       query: clean,
     };
     const updated = [newItem, ...presets];
@@ -979,6 +1010,9 @@ export default function App() {
   const targetArrivalMinusBuffer = subtractMinutesFromTime(arrivalTime, bufferMinutes);
 
   // 指定した移動日＋現地到着目安時刻（集合-バッファ）のUNIXタイムスタンプ（秒）
+  // ※Google MapsのWeb/アプリの!dataパラメータ(!8j)はタイムゾーン補正を挟まずUTC基準の数値をそのまま
+  // ピッカーに表示するため、ローカル目的時刻（年・月・日・時・分）をDate.UTCで秒換算して渡すことで、
+  // Google Maps側で正確に希望時刻（例: 10:10着）が開きます
   const targetArrivalUnixSeconds = useMemo(() => {
     const [y, m, d] = travelDate.split('-').map(Number);
     const dt = new Date(
@@ -992,7 +1026,15 @@ export default function App() {
     if (targetArrivalMinusBuffer.dayOffset < 0) {
       dt.setDate(dt.getDate() + targetArrivalMinusBuffer.dayOffset);
     }
-    return Math.floor(dt.getTime() / 1000);
+    const utcMs = Date.UTC(
+      dt.getFullYear(),
+      dt.getMonth(),
+      dt.getDate(),
+      dt.getHours(),
+      dt.getMinutes(),
+      0
+    );
+    return Math.floor(utcMs / 1000);
   }, [travelDate, targetArrivalMinusBuffer]);
 
   // --- 🚗 車モードの逆算ロジック (通常〜最大レンジ対応) ---

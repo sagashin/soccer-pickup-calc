@@ -97,7 +97,7 @@ export const SAMPLE_SCHEDULE_EVENTS = [
 ];
 
 /**
- * ファイルオブジェクトをBase64文字列に変換（長辺1600px以内にクライアント圧縮）
+ * ファイルオブジェクトをBase64文字列に変換（PDF対応 ＆ 画像は長辺1600px以内にクライアント圧縮）
  */
 export function fileToBase64(file) {
   return new Promise((resolve, reject) => {
@@ -106,6 +106,16 @@ export function fileToBase64(file) {
       const dataUrl = reader.result;
       if (typeof dataUrl !== 'string') {
         return reject(new Error('ファイルのBase64変換に失敗しました'));
+      }
+
+      // PDFファイルの場合は画像リサイズ処理をスキップしてそのまま返す
+      if (file.type === 'application/pdf' || file.name?.toLowerCase().endsWith('.pdf')) {
+        const base64Index = dataUrl.indexOf(',');
+        return resolve({
+          base64: base64Index !== -1 ? dataUrl.slice(base64Index + 1) : dataUrl,
+          mimeType: 'application/pdf',
+          previewUrl: dataUrl,
+        });
       }
 
       // クライアントサイドでの画像リサイズ・軽量化（最大長辺 1600px, JPEG 0.85）
@@ -192,7 +202,210 @@ export function calculateMeetingTime(kickoffTimeStr, leadMinutes) {
 }
 
 /**
- * Gemini 2.5 Flash / 1.5 Flash API でスケジュール画像を解析
+ * モデル名から世代バージョン番号を抽出（例: "gemini-3.8-flash" -> 3.8）
+ */
+function extractGeminiVersion(modelName) {
+  const match = (modelName || '').match(/gemini-(\d+(?:\.\d+)?)/);
+  return match ? parseFloat(match[1]) : 0;
+}
+
+/**
+ * 最新Geminiモデル（gemini-3.8-flash最優先）でマルチモーダルJSON生成を行う共通関数
+ */
+export async function generateGeminiJson({ prompt, base64Data, mimeType, apiKey }) {
+  if (!apiKey || !apiKey.trim()) {
+    throw new Error('Gemini APIキーが設定されていません。');
+  }
+
+  const parts = [{ text: prompt }];
+  if (base64Data) {
+    parts.push({
+      inlineData: {
+        mimeType: mimeType || 'image/jpeg',
+        data: base64Data,
+      },
+    });
+  }
+
+  const requestBody = {
+    contents: [{ parts }],
+    generationConfig: {
+      responseMimeType: 'application/json',
+      temperature: 0.1,
+    },
+  };
+
+  const preferredOrder = [
+    'gemini-3.8-flash',
+    'gemini-3.5-flash',
+    'gemini-3.5-flash-lite',
+    'gemini-flash-latest',
+    'gemini-3.1-flash-lite',
+    'gemini-flash-lite-latest',
+    'gemini-3.1-pro-preview',
+    'gemini-pro-latest',
+    'gemini-2.5-flash', // 旧プロジェクト用の最終フォールバックのみ
+  ];
+
+  const excludedTokens = [
+    'embedding',
+    'imagen',
+    'tts',
+    'audio',
+    'live',
+    'robotics',
+    'veo',
+    'lyria',
+    'aqa',
+    'gemma',
+    '1.5',
+    '2.0',
+  ];
+
+  // 1. Google APIからこのAPIキーで実際に使えるモデル一覧を動的に取得
+  let candidateModels = [];
+  try {
+    const listRes = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey.trim())}`
+    );
+    if (listRes.ok) {
+      const listData = await listRes.json();
+      if (Array.isArray(listData.models)) {
+        const available = listData.models
+          .filter((m) => {
+            if (!m.supportedGenerationMethods?.includes('generateContent')) return false;
+            const name = (m.name || '').toLowerCase();
+            if (!name.includes('gemini')) return false;
+            return !excludedTokens.some((token) => name.includes(token));
+          })
+          .map((m) => m.name.replace(/^models\//, ''));
+
+        candidateModels = available.sort((a, b) => {
+          const idxA = preferredOrder.indexOf(a);
+          const idxB = preferredOrder.indexOf(b);
+          if (idxA !== -1 && idxB !== -1) return idxA - idxB;
+          if (idxA !== -1) return -1;
+          if (idxB !== -1) return 1;
+
+          // バージョン番号が大きい（新しい世代）順を優先
+          const verA = extractGeminiVersion(a);
+          const verB = extractGeminiVersion(b);
+          if (verA !== verB) return verB - verA;
+
+          // preview や exp が付くモデルは安定版の後ろに配置
+          const aUnstable = a.includes('preview') || a.includes('exp') ? 1 : 0;
+          const bUnstable = b.includes('preview') || b.includes('exp') ? 1 : 0;
+          if (aUnstable !== bUnstable) return aUnstable - bUnstable;
+
+          return 0;
+        });
+      }
+    } else if (listRes.status === 400 || listRes.status === 401 || listRes.status === 403) {
+      const errText = await listRes.text();
+      if (errText.includes('API_KEY_INVALID') || errText.includes('API key not valid')) {
+        throw new Error('Gemini APIキーが無効です。Google AI Studioでキーをご確認ください。');
+      }
+      throw new Error(`Gemini APIキー認証エラー (${listRes.status}): ${errText}`);
+    }
+  } catch (err) {
+    if (err.message?.includes('Gemini APIキー')) {
+      throw err;
+    }
+    console.warn('ListModels failed, falling back to static list:', err);
+  }
+
+  // ListModelsが失敗した場合のフォールバック配列
+  if (candidateModels.length === 0) {
+    candidateModels = [
+      'gemini-3.8-flash',
+      'gemini-3.5-flash',
+      'gemini-3.5-flash-lite',
+      'gemini-flash-latest',
+      'gemini-3.1-flash-lite',
+    ];
+  }
+
+  let lastError = null;
+
+  for (const model of candidateModels) {
+    for (const apiVersion of ['v1beta', 'v1']) {
+      try {
+        const url = `https://generativelanguage.googleapis.com/${apiVersion}/models/${model}:generateContent?key=${encodeURIComponent(
+          apiKey.trim()
+        )}`;
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(requestBody),
+        });
+
+        if (!res.ok) {
+          const errorText = await res.text();
+          // 404 (指定バージョンでモデル不在/廃止) や非対応モダリティエラーの場合は次の候補へ即座にフォールバック
+          if (
+            res.status === 404 ||
+            (res.status === 400 &&
+              (errorText.includes('modality is not enabled') ||
+                errorText.includes('not supported') ||
+                errorText.includes('responseMimeType')))
+          ) {
+            continue;
+          }
+          // 429（レート制限）はリトライしても意味がないので即座に中断して通知
+          if (res.status === 429) {
+            throw new Error('Gemini APIの利用上限（レート制限）に達しました。1分ほど待ってから再試行してください。');
+          }
+          // キーそのものが無効な場合
+          if (
+            res.status === 400 &&
+            (errorText.includes('API_KEY_INVALID') || errorText.includes('API key not valid'))
+          ) {
+            throw new Error('Gemini APIキーが無効です。Google AI Studioでキーをご確認ください。');
+          }
+          if (res.status === 401 || res.status === 403) {
+            throw new Error(`Gemini API認証エラー (${res.status}): APIキーをご確認ください。`);
+          }
+          throw new Error(`Gemini API エラー (${res.status}): ${errorText}`);
+        }
+
+        const data = await res.json();
+        const candidateText = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+
+        if (!candidateText) {
+          throw new Error('Gemini APIからテキスト応答が得られませんでした。');
+        }
+
+        const cleanJsonStr = candidateText
+          .replace(/^```json\s*/i, '')
+          .replace(/^```\s*/i, '')
+          .replace(/\s*```$/i, '')
+          .trim();
+
+        return JSON.parse(cleanJsonStr);
+      } catch (err) {
+        lastError = err;
+        // 致命的エラー（キー不正やクォータ枯渇など）はモデルループを継続せず即座にスロー
+        if (
+          err.message?.includes('利用上限') ||
+          err.message?.includes('APIキーが無効') ||
+          err.message?.includes('認証エラー')
+        ) {
+          throw err;
+        }
+      }
+    }
+  }
+
+  throw (
+    lastError ||
+    new Error('利用可能なGeminiモデルが見つかりませんでした。APIキーが有効かご確認ください。')
+  );
+}
+
+/**
+ * Gemini API でスケジュール画像・PDFを解析
  */
 export async function parseScheduleImageWithGemini(base64Data, mimeType, apiKey) {
   if (!apiKey || !apiKey.trim()) {
@@ -201,7 +414,7 @@ export async function parseScheduleImageWithGemini(base64Data, mimeType, apiKey)
 
   const currentYear = new Date().getFullYear();
   const prompt = `あなたはジュニアサッカー・ユースサッカーのスケジュール管理の専門家です。
-提供されたスケジュール画像（日程表、予定表、カレンダー形式の表など）を解析し、含まれている個々の予定・試合情報を構造化JSONで抽出してください。
+提供されたスケジュール画像またはPDF（日程表、予定表、カレンダー形式の表など）を解析し、含まれている個々の予定・試合情報を構造化JSONで抽出してください。
 
 【抽出ルール】
 1. 各予定ごとに以下の項目を抽出してください：
@@ -243,169 +456,18 @@ export async function parseScheduleImageWithGemini(base64Data, mimeType, apiKey)
   ]
 }`;
 
-  const requestBody = {
-    contents: [
-      {
-        parts: [
-          { text: prompt },
-          {
-            inlineData: {
-              mimeType: mimeType || 'image/jpeg',
-              data: base64Data,
-            },
-          },
-        ],
-      },
-    ],
-    generationConfig: {
-      responseMimeType: 'application/json',
-      temperature: 0.1,
-    },
-  };
+  const parsed = await generateGeminiJson({
+    prompt,
+    base64Data,
+    mimeType,
+    apiKey,
+  });
 
-  // 1. Google APIからこのAPIキーで実際に使えるモデル一覧を動的に取得
-  let candidateModels = [];
-  try {
-    const listRes = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey.trim())}`
-    );
-    if (listRes.ok) {
-      const listData = await listRes.json();
-      if (Array.isArray(listData.models)) {
-        const available = listData.models
-          .filter(
-            (m) =>
-              m.supportedGenerationMethods?.includes('generateContent') &&
-              m.name?.includes('gemini') &&
-              !m.name?.includes('embedding') &&
-              !m.name?.includes('imagen') &&
-              !m.name?.includes('tts') &&
-              !m.name?.includes('audio') &&
-              !m.name?.includes('robotics')
-          )
-          .map((m) => m.name.replace(/^models\//, ''));
+  const events = Array.isArray(parsed?.events) ? parsed.events : [];
 
-        const preferredOrder = [
-          'gemini-2.5-flash',
-          'gemini-1.5-flash',
-          'gemini-2.0-flash',
-          'gemini-1.5-flash-8b',
-          'gemini-1.5-pro',
-        ];
-
-        // 安定した主力マルチモーダルモデルを最優先にソート
-        candidateModels = available.sort((a, b) => {
-          const idxA = preferredOrder.indexOf(a);
-          const idxB = preferredOrder.indexOf(b);
-          if (idxA !== -1 && idxB !== -1) return idxA - idxB;
-          if (idxA !== -1) return -1;
-          if (idxB !== -1) return 1;
-          // previewモデルは後ろへ
-          const aPreview = a.includes('preview') ? 1 : 0;
-          const bPreview = b.includes('preview') ? 1 : 0;
-          if (aPreview !== bPreview) return aPreview - bPreview;
-          return 0;
-        });
-      }
-    } else if (listRes.status === 400 || listRes.status === 401 || listRes.status === 403) {
-      const errText = await listRes.text();
-      if (errText.includes('API_KEY_INVALID') || errText.includes('API key not valid')) {
-        throw new Error('Gemini APIキーが無効です。Google AI Studioでキーをご確認ください。');
-      }
-      throw new Error(`Gemini APIキー認証エラー (${listRes.status}): ${errText}`);
-    }
-  } catch (err) {
-    if (err.message?.includes('Gemini APIキー')) {
-      throw err;
-    }
-    console.warn('ListModels failed, falling back to static list:', err);
-  }
-
-  // リスト取得できなかった場合のフォールバック候補（画像解析に実績のあるモデル順）
-  if (candidateModels.length === 0) {
-    candidateModels = [
-      'gemini-2.5-flash',
-      'gemini-1.5-flash',
-      'gemini-2.0-flash',
-      'gemini-1.5-flash-8b',
-      'gemini-1.5-pro',
-    ];
-  }
-
-  let lastError = null;
-
-  for (const model of candidateModels) {
-    for (const apiVersion of ['v1beta', 'v1']) {
-      try {
-        const url = `https://generativelanguage.googleapis.com/${apiVersion}/models/${model}:generateContent?key=${encodeURIComponent(
-          apiKey.trim()
-        )}`;
-        const res = await fetch(url, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify(requestBody),
-        });
-
-        if (!res.ok) {
-          const errorText = await res.text();
-          // 404 (指定バージョンでモデル不在) や、特定モデルが画像入力非対応(TTS等)の場合は次モデルを試す
-          if (
-            res.status === 404 ||
-            (res.status === 400 && errorText.includes('Image input modality is not enabled'))
-          ) {
-            continue;
-          }
-          // 429（レート制限）はリトライしても意味がないので即座に中断して通知
-          if (res.status === 429) {
-            throw new Error('Gemini APIの利用上限（レート制限）に達しました。1分ほど待ってから再試行してください。');
-          }
-          // キーそのものが無効な場合
-          if (
-            res.status === 400 &&
-            (errorText.includes('API_KEY_INVALID') || errorText.includes('API key not valid'))
-          ) {
-            throw new Error('Gemini APIキーが無効です。Google AI Studioでキーをご確認ください。');
-          }
-          if (res.status === 401 || res.status === 403) {
-            throw new Error(`Gemini API認証エラー (${res.status}): APIキーをご確認ください。`);
-          }
-          throw new Error(`Gemini API エラー (${res.status}): ${errorText}`);
-        }
-
-        const data = await res.json();
-        const candidateText =
-          data.candidates?.[0]?.content?.parts?.[0]?.text || '';
-
-        if (!candidateText) {
-          throw new Error('Gemini APIからテキスト応答が得られませんでした。');
-        }
-
-        const parsed = JSON.parse(candidateText);
-        const events = Array.isArray(parsed.events) ? parsed.events : [];
-
-        // 各イベントに一意のIDを付与
-        return events.map((ev, idx) => ({
-          ...ev,
-          id: `ai-event-${Date.now()}-${idx}`,
-        }));
-      } catch (err) {
-        lastError = err;
-        // 致命的エラー（キー不正やクォータ枯渇など）はモデルループを継続せず即座にスロー
-        if (
-          err.message?.includes('利用上限') ||
-          err.message?.includes('APIキーが無効') ||
-          err.message?.includes('認証エラー')
-        ) {
-          throw err;
-        }
-      }
-    }
-  }
-
-  throw (
-    lastError ||
-    new Error('利用可能なGeminiモデルが見つかりませんでした。APIキーが有効かご確認ください。')
-  );
+  // 各イベントに一意のIDを付与
+  return events.map((ev, idx) => ({
+    ...ev,
+    id: `ai-event-${Date.now()}-${idx}`,
+  }));
 }

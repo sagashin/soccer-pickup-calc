@@ -26,6 +26,7 @@ import {
   Edit2,
   Share2,
   Copy,
+  BookOpen,
   X,
 } from 'lucide-react';
 import RouteMap from './RouteMap';
@@ -35,6 +36,8 @@ import ScheduleImageImporter from './ScheduleImageImporter';
 import ScheduleCalendarView from './ScheduleCalendarView';
 import MatchWeatherChecklist from './MatchWeatherChecklist';
 import GoogleMapsKeyModal from './GoogleMapsKeyModal';
+import TeamVaultView from './TeamVaultView';
+import { findMatchingVenueDocs } from './teamVaultStore';
 import {
   parseFamilyShareUrl,
   mergeImportedEvents,
@@ -878,6 +881,12 @@ export default function App() {
     const todayStr = formatLocalDate(new Date());
     return getSavedSchedules().filter((s) => s.dateIso >= todayStr).length;
   }, [scheduleRefreshKey, activeTab]);
+
+  // 現在の目的地に一致するチーム登録の会場・駐車場ルール
+  const matchedVenueDocs = useMemo(
+    () => findMatchingVenueDocs(destination),
+    [destination, activeTab]
+  );
 
   const handleSelectPreset = (preset) => {
     setSelectedPresetId(preset.id);
@@ -1882,6 +1891,27 @@ export default function App() {
                       </div>
                     </div>
                   )}
+
+                  {/* 📌 チーム登録の会場・駐車場ルール 自動通知バナー */}
+                  {matchedVenueDocs.length > 0 && (
+                    <div className="mt-2.5 p-3 bg-amber-50 border-2 border-amber-300/90 rounded-2xl space-y-1.5 shadow-xs">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="text-xs font-black text-amber-950 flex items-center gap-1.5">
+                          <span>📌 チーム登録の会場・駐車場ルールあり（{matchedVenueDocs[0].title}）</span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setActiveTab('vault')}
+                          className="text-[11px] font-black text-white bg-amber-600 hover:bg-amber-700 px-2.5 py-1 rounded-lg shrink-0 transition active:scale-95"
+                        >
+                          詳細・PDFを見る ➔
+                        </button>
+                      </div>
+                      <p className="text-xs font-bold text-amber-900 leading-relaxed">
+                        {matchedVenueDocs[0].parkingRules || matchedVenueDocs[0].summary}
+                      </p>
+                    </div>
+                  )}
                 </div>
 
                 {/* 会場クイック選択チップ（日程の会場・最近の会場・よく行く会場を統合） */}
@@ -2491,6 +2521,27 @@ export default function App() {
           {/* ==================== タブ: 🅿️ 駐車場・周辺スポット / 🚉 駅・周辺施設 ==================== */}
           {activeTab === 'spots' && (
             <div className="space-y-4">
+              {/* 📌 チーム登録の会場・駐車場ルール 自動通知バナー */}
+              {matchedVenueDocs.length > 0 && (
+                <div className="p-3.5 bg-amber-50 border-2 border-amber-300/90 rounded-3xl space-y-1.5 shadow-sm">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="text-xs font-black text-amber-950 flex items-center gap-1.5">
+                      <span>📌 チーム登録の会場・駐車場ルールあり（{matchedVenueDocs[0].title}）</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab('vault')}
+                      className="text-[11px] font-black text-white bg-amber-600 hover:bg-amber-700 px-2.5 py-1 rounded-lg shrink-0 transition active:scale-95"
+                    >
+                      詳細・PDFを見る ➔
+                    </button>
+                  </div>
+                  <p className="text-xs font-bold text-amber-900 leading-relaxed">
+                    {matchedVenueDocs[0].parkingRules || matchedVenueDocs[0].summary}
+                  </p>
+                </div>
+              )}
+
               {/* ルートマップ（スポット連動表示） */}
               <section className="bg-white rounded-3xl p-4 shadow-sm border border-slate-200/80 space-y-2.5">
                 <div className="flex items-center justify-between">
@@ -2587,6 +2638,22 @@ export default function App() {
             </div>
           )}
 
+          {/* ==================== タブ 5: 📚 チームノート（会場資料・体力測定・助言） ==================== */}
+          {activeTab === 'vault' && (
+            <div className="space-y-4">
+              <TeamVaultView
+                onApplyVenueToCalc={(venueName) => {
+                  setDestination(venueName);
+                  setSelectedPresetId(null);
+                  recordRecentVenue(venueName);
+                  setActiveTab('calc');
+                  calculateRoute(origin, venueName);
+                }}
+                highlightVenueName={destination}
+              />
+            </div>
+          )}
+
           {/* スマホホーム画面追加のミニヒント */}
           <footer className="text-center text-xs text-slate-400 pt-2 pb-6 space-y-1">
             <p className="font-bold text-slate-500">
@@ -2598,8 +2665,8 @@ export default function App() {
           </footer>
         </main>
 
-        {/* 📱 スマホ・PC共通 固定ボトムナビゲーションバー（上部タブと一本化・バッジ表示対応） */}
-        <div className="fixed bottom-0 left-0 right-0 z-40 bg-white/95 backdrop-blur-md border-t border-slate-200/90 py-1.5 px-2 grid grid-cols-4 gap-1 max-w-md mx-auto shadow-2xl">
+        {/* 📱 スマホ・PC共通 固定ボトムナビゲーションバー（5タブ・バッジ表示対応） */}
+        <div className="fixed bottom-0 left-0 right-0 z-40 bg-white/95 backdrop-blur-md border-t border-slate-200/90 py-1.5 px-1.5 grid grid-cols-5 gap-1 max-w-md mx-auto shadow-2xl">
           <button
             type="button"
             onClick={() => {
@@ -2688,6 +2755,29 @@ export default function App() {
           >
             <CheckSquare className={`w-5 h-5 ${activeTab === 'checklist' ? 'stroke-[2.5]' : ''}`} />
             <span className="text-[10px]">持ち物</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setActiveTab('vault');
+              window.scrollTo({ top: 0, behavior: 'smooth' });
+            }}
+            className={`py-1.5 flex flex-col items-center justify-center gap-0.5 rounded-2xl transition relative ${
+              activeTab === 'vault'
+                ? isTrainMode
+                  ? 'bg-indigo-50 text-indigo-700 font-extrabold'
+                  : 'bg-emerald-50 text-emerald-700 font-extrabold'
+                : 'text-slate-400 hover:text-slate-600 font-medium'
+            }`}
+          >
+            <div className="relative">
+              <BookOpen className={`w-5 h-5 ${activeTab === 'vault' ? 'stroke-[2.5]' : ''}`} />
+              {matchedVenueDocs.length > 0 && (
+                <span className="absolute -top-1 -right-2 w-2.5 h-2.5 rounded-full bg-amber-500 ring-2 ring-white" />
+              )}
+            </div>
+            <span className="text-[10px]">ノート</span>
           </button>
         </div>
 

@@ -4,6 +4,16 @@
 
 export const SCHEDULE_STORAGE_KEY = 'soccer_pickup_schedules_v1';
 
+/**
+ * ローカル日付ヘルパー（JST朝0:00〜8:59のUTC日付ズレ防止）
+ */
+export function getLocalDateIso(dateObj = new Date()) {
+  const y = dateObj.getFullYear();
+  const m = String(dateObj.getMonth() + 1).padStart(2, '0');
+  const d = String(dateObj.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
 export const CATEGORY_COLORS = {
   公式戦: {
     badge: 'bg-rose-100 text-rose-700 border-rose-200',
@@ -122,16 +132,15 @@ export function mergeImportedEvents(importedEvents, defaultMeetingLeadMinutes = 
     const lead = imp.meetingLeadMinutes ?? defaultMeetingLeadMinutes;
     const meetingTime = imp.meetingTime || calculateMeetingTimeFromKickoff(kickoff, lead);
 
-    // 重複判定：日付が同じ かつ (会場名が一部一致 または タイトルが一部一致)
+    // 重複判定：同一日かつ（タイトル完全一致 ＆ 時刻一致）または（会場一致 ＆ タイトル一致）の場合のみ上書き
     const matchIndex = updatedList.findIndex((item) => {
       if (item.dateIso !== imp.dateIso) return false;
-      if (item.venue && imp.venue && (item.venue.includes(imp.venue) || imp.venue.includes(item.venue))) {
-        return true;
-      }
-      if (item.title && imp.title && (item.title.includes(imp.title) || imp.title.includes(item.title))) {
-        return true;
-      }
-      return false;
+      const itemKo = item.kickoffTime || '';
+      const sameTime = itemKo === kickoff;
+      const sameTitle = item.title && imp.title && item.title.trim() === imp.title.trim();
+      const sameVenue = item.venue && imp.venue && item.venue.trim() === imp.venue.trim();
+      // 同一日かつ（タイトル完全一致 ＆ 時刻一致）または（会場一致 ＆ タイトル一致）の場合のみ上書き
+      return (sameTime && (sameTitle || sameVenue)) || (sameTitle && sameVenue);
     });
 
     const normalizedEvent = {
@@ -183,6 +192,15 @@ export function calculateMeetingTimeFromKickoff(timeStr, leadMinutes = 120) {
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
 }
 
+function calculateEndHoursStr(startTimeStr, durationHours = 4) {
+  const [hh, mm] = (startTimeStr || '09:00').split(':').map(Number);
+  const startMin = (hh || 9) * 60 + (mm || 0);
+  const endMin = Math.min(23 * 60 + 59, startMin + durationHours * 60);
+  const outH = String(Math.floor(endMin / 60)).padStart(2, '0');
+  const outM = String(endMin % 60).padStart(2, '0');
+  return `${outH}${outM}00`;
+}
+
 /**
  * Googleカレンダー登録用URLを生成
  */
@@ -196,7 +214,7 @@ export function generateGoogleCalendarUrl(event) {
   // 日時フォーマット YYYYMMDDTHHmmss
   const dateStr = (event.dateIso || '').replace(/-/g, '');
   const startHours = (event.meetingTime || '09:00').replace(':', '') + '00';
-  const endHours = '180000'; // 概算終了時刻
+  const endHours = calculateEndHoursStr(event.meetingTime || '09:00', 4);
 
   const dates = `${dateStr}T${startHours}/${dateStr}T${endHours}`;
   return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${title}&dates=${dates}&details=${details}&location=${location}`;
@@ -208,7 +226,7 @@ export function generateGoogleCalendarUrl(event) {
 export function exportToIcs(event) {
   const dateStr = (event.dateIso || '').replace(/-/g, '');
   const startHours = (event.meetingTime || '09:00').replace(':', '') + '00';
-  const endHours = '170000';
+  const endHours = calculateEndHoursStr(event.meetingTime || '09:00', 4);
 
   const icsContent = [
     'BEGIN:VCALENDAR',
@@ -268,7 +286,7 @@ export function generateFamilyShareUrl(schedules) {
   // 過去すぎる予定（30日以上前）は除外してURL長を節約
   const cutoff = new Date();
   cutoff.setDate(cutoff.getDate() - 30);
-  const cutoffIso = cutoff.toISOString().slice(0, 10);
+  const cutoffIso = getLocalDateIso(cutoff);
 
   // 日付昇順で直近〜未来の予定を最大25件まで選定（URL肥大化の防止）
   const filtered = schedules

@@ -139,8 +139,121 @@ function categorizeConvenience(name) {
 export async function fetchNearbySpots({ lat, lon, destName = '', signal }) {
   if (!lat || !lon) return { parkings: [], conveniences: [] };
 
-  // 約1.2km範囲のBounding Box計算
   const radiusMeters = 1300;
+
+  // 1. まず Overpass API で駐車場とコンビニを1回のリクエストで一括取得（高速＆429回避）
+  try {
+    const overpassQuery = `
+      [out:json][timeout:6];
+      (
+        node["amenity"="parking"](around:${radiusMeters},${lat},${lon});
+        way["amenity"="parking"](around:${radiusMeters},${lat},${lon});
+        node["shop"="convenience"](around:${radiusMeters},${lat},${lon});
+        way["shop"="convenience"](around:${radiusMeters},${lat},${lon});
+      );
+      out center 40;
+    `;
+
+    const overpassRes = await fetch('https://overpass-api.de/api/interpreter', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: `data=${encodeURIComponent(overpassQuery)}`,
+      signal,
+    });
+
+    if (overpassRes.ok) {
+      const data = await overpassRes.json();
+      if (Array.isArray(data?.elements) && data.elements.length > 0) {
+        const seenParkingCoord = new Set();
+        const parkings = [];
+        const seenConvCoord = new Set();
+        const conveniences = [];
+
+        for (const el of data.elements) {
+          const itemLat = el.lat ?? el.center?.lat;
+          const itemLon = el.lon ?? el.center?.lon;
+          if (!itemLat || !itemLon) continue;
+
+          const distMeters = calculateDistanceMeters(lat, lon, itemLat, itemLon);
+          if (distMeters > radiusMeters) continue;
+
+          const coordKey = `${Number(itemLat).toFixed(4)},${Number(itemLon).toFixed(4)}`;
+
+          if (el.tags?.amenity === 'parking') {
+            if (seenParkingCoord.has(coordKey)) continue;
+            seenParkingCoord.add(coordKey);
+
+            let name = el.tags?.name || '';
+            if (!name || name === '駐車場' || name === 'parking') {
+              name = `${destName ? destName + '周辺' : '施設周辺'} 駐車場`;
+            }
+
+            const { type, badgeLabel, badgeColor, feeLabel } = categorizeParking(
+              name,
+              el.tags
+            );
+
+            const address = el.tags?.['addr:city']
+              ? `${el.tags['addr:city']}${el.tags['addr:street'] || ''}`
+              : destName || '周辺駐車場';
+
+            parkings.push({
+              id: `parking-${el.id || parkings.length}-${coordKey}`,
+              category: 'parking',
+              type,
+              name,
+              badgeLabel,
+              badgeColor,
+              feeLabel,
+              lat: itemLat,
+              lon: itemLon,
+              distanceMeters: distMeters,
+              walkMinutes: getWalkMinutes(distMeters),
+              address,
+              googleNavUrl: `https://www.google.com/maps/dir/?api=1&destination=${itemLat},${itemLon}&travelmode=driving`,
+            });
+          } else if (el.tags?.shop === 'convenience') {
+            if (seenConvCoord.has(coordKey)) continue;
+            seenConvCoord.add(coordKey);
+
+            const name = el.tags?.name || 'コンビニ';
+            const brandInfo = categorizeConvenience(name);
+            const address = el.tags?.['addr:city']
+              ? `${el.tags['addr:city']}${el.tags['addr:street'] || ''}`
+              : destName || '周辺施設';
+
+            conveniences.push({
+              id: `conv-${el.id || conveniences.length}-${coordKey}`,
+              category: 'convenience',
+              name,
+              ...brandInfo,
+              lat: itemLat,
+              lon: itemLon,
+              distanceMeters: distMeters,
+              walkMinutes: getWalkMinutes(distMeters),
+              address,
+              googleNavUrl: `https://www.google.com/maps/dir/?api=1&destination=${itemLat},${itemLon}&travelmode=driving`,
+            });
+          }
+        }
+
+        if (parkings.length > 0 || conveniences.length > 0) {
+          parkings.sort((a, b) => a.distanceMeters - b.distanceMeters);
+          conveniences.sort((a, b) => a.distanceMeters - b.distanceMeters);
+          return {
+            parkings: parkings.slice(0, 12),
+            conveniences: conveniences.slice(0, 10),
+          };
+        }
+      }
+    }
+  } catch (err) {
+    if (err.name !== 'AbortError') {
+      console.warn('Overpass spots query fallback to Nominatim:', err);
+    }
+  }
+
+  // 2. Overpassがエラーまたは0件の場合: 350ms以上の間隔を空けて直列で Nominatim 検索を実行
   const deltaLat = radiusMeters / 111000;
   const deltaLon = radiusMeters / (111000 * Math.cos((lat * Math.PI) / 180));
 
@@ -168,11 +281,13 @@ export async function fetchNearbySpots({ lat, lon, destName = '', signal }) {
     }
   };
 
-  const [parkingList, coinList, convList] = await Promise.all([
-    fetchNominatim('駐車場'),
-    fetchNominatim('コインパーキング'),
-    fetchNominatim('コンビニ'),
-  ]);
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  const parkingList = await fetchNominatim('駐車場');
+  await sleep(360);
+  const coinList = await fetchNominatim('コインパーキング');
+  await sleep(360);
+  const convList = await fetchNominatim('コンビニ');
 
   // 重複排除キー用
   const seenParkingCoord = new Set();
@@ -194,7 +309,6 @@ export async function fetchNearbySpots({ lat, lon, destName = '', signal }) {
     const parts = (item.display_name || '').split(',').map((x) => x.trim());
     let name = item.name || '';
     if (!name || name === '駐車場' || name === 'parking') {
-      // 道路名や地域名を補完
       const roadOrArea = parts[0] || '施設周辺';
       name = `${roadOrArea} 駐車場`;
     }
@@ -223,10 +337,8 @@ export async function fetchNearbySpots({ lat, lon, destName = '', signal }) {
     });
   }
 
-  // 距離順でソート (上位12件)
   parkings.sort((a, b) => a.distanceMeters - b.distanceMeters);
 
-  // コンビニの重複排除 & 距離ソート
   const seenConvCoord = new Set();
   const conveniences = [];
 

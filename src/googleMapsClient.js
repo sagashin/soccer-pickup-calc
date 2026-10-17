@@ -487,6 +487,42 @@ export async function getCoordsByPlaceId(placeId, apiKey) {
   });
 }
 
+function decodePolylinePoints(encoded) {
+  if (!encoded) return [];
+  const coordinates = [];
+  let index = 0;
+  const len = encoded.length;
+  let lat = 0;
+  let lng = 0;
+
+  while (index < len) {
+    let b;
+    let shift = 0;
+    let result = 0;
+    do {
+      b = encoded.charCodeAt(index++) - 63;
+      result |= (b & 0x1f) << shift;
+      shift += 5;
+    } while (b >= 0x20);
+    const dlat = (result & 1) !== 0 ? ~(result >> 1) : result >> 1;
+    lat += dlat;
+
+    shift = 0;
+    result = 0;
+    do {
+      b = encoded.charCodeAt(index++) - 63;
+      result |= (b & 0x1f) << shift;
+      shift += 5;
+    } while (b >= 0x20);
+    const dlng = (result & 1) !== 0 ? ~(result >> 1) : result >> 1;
+    lng += dlng;
+
+    // GeoJSON coordinates は [lon, lat]
+    coordinates.push([lng * 1e-5, lat * 1e-5]);
+  }
+  return coordinates;
+}
+
 /**
  * 新世代 Routes API (v2) による車ルート & リアルタイム渋滞予測の直接取得
  * - Google Cloud Console で有効化された「Routes API」を使用
@@ -537,7 +573,7 @@ async function fetchWithRoutesApiV2({ originCoords, destCoords, arrivalDate, api
       'Content-Type': 'application/json',
       'X-Goog-Api-Key': apiKey,
       'X-Goog-FieldMask':
-        'routes.duration,routes.staticDuration,routes.distanceMeters,routes.description',
+        'routes.duration,routes.staticDuration,routes.distanceMeters,routes.description,routes.polyline.encodedPolyline',
     },
     body: JSON.stringify(body),
   });
@@ -566,6 +602,17 @@ async function fetchWithRoutesApiV2({ originCoords, destCoords, arrivalDate, api
   const minMinutes = Math.max(1, Math.round(normalSec / 60));
   const maxMinutes = Math.max(minMinutes, Math.round(trafficSec / 60));
 
+  let geometry = null;
+  if (route.polyline?.encodedPolyline) {
+    const coords = decodePolylinePoints(route.polyline.encodedPolyline);
+    if (coords.length > 0) {
+      geometry = {
+        type: 'LineString',
+        coordinates: coords,
+      };
+    }
+  }
+
   return {
     minMinutes,
     maxMinutes,
@@ -574,6 +621,7 @@ async function fetchWithRoutesApiV2({ originCoords, destCoords, arrivalDate, api
     summary: route.description || '',
     isGoogleRealtime: true,
     source: 'routes-api-v2',
+    geometry,
   };
 }
 

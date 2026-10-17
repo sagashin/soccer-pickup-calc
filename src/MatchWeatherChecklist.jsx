@@ -99,7 +99,7 @@ export default function MatchWeatherChecklist({
       try {
         const lat = destGeo.lat.toFixed(4);
         const lon = destGeo.lon.toFixed(4);
-        const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&daily=weathercode,temperature_2m_max,temperature_2m_min,precipitation_probability_max&timezone=Asia%2FTokyo`;
+        const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&daily=weathercode,temperature_2m_max,temperature_2m_min,precipitation_probability_max&timezone=Asia%2FTokyo&forecast_days=16`;
 
         const res = await fetch(url);
         if (!res.ok) throw new Error('天気予報の取得に失敗しました');
@@ -297,7 +297,7 @@ export default function MatchWeatherChecklist({
     }
 
     return sections;
-  }, [weatherData, uniformMode, customItems]);
+  }, [weatherData, uniformMode, customItems, transportMode]);
 
   // 全アイテム数とチェック済み数の集計
   const totalItemsCount = useMemo(() => {

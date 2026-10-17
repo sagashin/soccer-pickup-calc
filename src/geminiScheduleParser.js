@@ -97,22 +97,76 @@ export const SAMPLE_SCHEDULE_EVENTS = [
 ];
 
 /**
- * ファイルオブジェクトをBase64文字列に変換
+ * ファイルオブジェクトをBase64文字列に変換（長辺1600px以内にクライアント圧縮）
  */
 export function fileToBase64(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => {
       const dataUrl = reader.result;
-      const base64Index = dataUrl.indexOf(',');
-      if (base64Index !== -1) {
+      if (typeof dataUrl !== 'string') {
+        return reject(new Error('ファイルのBase64変換に失敗しました'));
+      }
+
+      // クライアントサイドでの画像リサイズ・軽量化（最大長辺 1600px, JPEG 0.85）
+      try {
+        const img = new Image();
+        img.onload = () => {
+          try {
+            const maxDimension = 1600;
+            let width = img.width;
+            let height = img.height;
+
+            if (width > maxDimension || height > maxDimension) {
+              if (width > height) {
+                height = Math.round((height * maxDimension) / width);
+                width = maxDimension;
+              } else {
+                width = Math.round((width * maxDimension) / height);
+                height = maxDimension;
+              }
+            }
+
+            const canvas = document.createElement('canvas');
+            canvas.width = width;
+            canvas.height = height;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(img, 0, 0, width, height);
+
+            const compressedDataUrl = canvas.toDataURL('image/jpeg', 0.85);
+            const base64Index = compressedDataUrl.indexOf(',');
+            if (base64Index !== -1) {
+              return resolve({
+                base64: compressedDataUrl.slice(base64Index + 1),
+                mimeType: 'image/jpeg',
+                previewUrl: compressedDataUrl,
+              });
+            }
+          } catch (_) {}
+          // Canvas失敗時はFileReaderの結果にフォールバック
+          const base64Index = dataUrl.indexOf(',');
+          resolve({
+            base64: dataUrl.slice(base64Index + 1),
+            mimeType: file.type || 'image/jpeg',
+            previewUrl: dataUrl,
+          });
+        };
+        img.onerror = () => {
+          const base64Index = dataUrl.indexOf(',');
+          resolve({
+            base64: dataUrl.slice(base64Index + 1),
+            mimeType: file.type || 'image/jpeg',
+            previewUrl: dataUrl,
+          });
+        };
+        img.src = dataUrl;
+      } catch (_) {
+        const base64Index = dataUrl.indexOf(',');
         resolve({
           base64: dataUrl.slice(base64Index + 1),
           mimeType: file.type || 'image/jpeg',
           previewUrl: dataUrl,
         });
-      } else {
-        reject(new Error('ファイルのBase64変換に失敗しました'));
       }
     };
     reader.onerror = (err) => reject(err);
@@ -341,7 +395,8 @@ export async function parseScheduleImageWithGemini(base64Data, mimeType, apiKey)
         // 致命的エラー（キー不正やクォータ枯渇など）はモデルループを継続せず即座にスロー
         if (
           err.message?.includes('利用上限') ||
-          err.message?.includes('認証・リクエストエラー')
+          err.message?.includes('APIキーが無効') ||
+          err.message?.includes('認証エラー')
         ) {
           throw err;
         }

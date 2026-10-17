@@ -93,13 +93,6 @@ const BUFFER_OPTIONS = [
   { label: '30分前', value: 30 },
 ];
 
-const TRAFFIC_OPTIONS = [
-  { label: '日付・時間帯から自動判定', shortLabel: '自動判定', value: 'auto' },
-  { label: '通常 (1.0x)', shortLabel: '通常 (1.0x)', value: 1.0 },
-  { label: '少し混雑 (1.2x)', shortLabel: '少し混雑 (1.2x)', value: 1.2 },
-  { label: '渋滞考慮 (1.4x)', shortLabel: '渋滞考慮 (1.4x)', value: 1.4 },
-];
-
 const WEEKDAYS_JA = ['日', '月', '火', '水', '木', '金', '土'];
 
 function formatLocalDate(dateObj) {
@@ -463,8 +456,6 @@ export default function App() {
     return localStorage.getItem(STORAGE_KEYS.TRANSPORT_MODE) || 'car';
   });
 
-  // デフォルトは日付・曜日・時間帯から自動判定 ('auto')、または手動の分数指定もサポート
-  const [trafficMode, setTrafficMode] = useState('auto');
   // Googleマップで確認した実際の所要時間を直接入力して上書きできるオプション (車)
   const [manualDriveMinutes, setManualDriveMinutes] = useState('');
   // 乗換案内で確認した電車の所要時間を直接入力して上書きできるオプション (電車)
@@ -583,6 +574,7 @@ export default function App() {
   // 非同期処理の競合対策: 最新リクエスト以外の結果は破棄する
   const routeRequestIdRef = useRef(0);
   const spotsAbortRef = useRef(null);
+  const stationsRequestIdRef = useRef(0);
 
   // 周辺スポット検索処理
   const loadNearbySpots = useCallback(async (destGeo, destName) => {
@@ -619,14 +611,19 @@ export default function App() {
     }
   }, []);
 
-  // 会場最寄り駅検索処理
+  // 会場最寄り駅検索処理（並行処理ガード付き）
   const loadNearbyStations = useCallback(async (destGeo) => {
     if (!destGeo?.lat || !destGeo?.lon) return;
+    const reqId = ++stationsRequestIdRef.current;
     try {
       const stations = await fetchNearbyStations(destGeo.lat, destGeo.lon);
-      setNearbyStations(stations);
+      if (reqId === stationsRequestIdRef.current) {
+        setNearbyStations(stations);
+      }
     } catch (e) {
-      console.warn('最寄り駅取得スキップ:', e);
+      if (reqId === stationsRequestIdRef.current) {
+        console.warn('最寄り駅取得スキップ:', e);
+      }
     }
   }, []);
 
@@ -663,9 +660,14 @@ export default function App() {
     localStorage.setItem(STORAGE_KEYS.TRANSPORT_MODE, transportMode);
   }, [transportMode]);
 
-  const calculateRoute = useCallback(async (targetOrigin, targetDest, modeToUse = transportMode) => {
+  const calculateRoute = useCallback(async (targetOrigin, targetDest, options = {}) => {
     const o = (targetOrigin ?? origin).trim();
     const d = (targetDest ?? destination).trim();
+
+    const effectiveDate = options.travelDate ?? travelDate;
+    const effectiveTime = options.arrivalTime ?? arrivalTime;
+    const effectiveBuffer = options.bufferMinutes ?? bufferMinutes;
+    const effectiveMode = options.transportMode ?? transportMode;
 
     if (!o || !d) {
       setError('出発地と目的地の両方を入力してください。');
@@ -715,8 +717,8 @@ export default function App() {
 
       if (gKey) {
         // 集合時刻ではなく、目標到着時刻（集合時刻 - バッファ分前）を基準に逆算
-        const targetArr = subtractMinutesFromTime(arrivalTime, bufferMinutes);
-        const [y, m, day] = travelDate.split('-').map(Number);
+        const targetArr = subtractMinutesFromTime(effectiveTime, effectiveBuffer);
+        const [y, m, day] = effectiveDate.split('-').map(Number);
         const arrDate = new Date(
           y,
           (m || 1) - 1,
@@ -725,6 +727,9 @@ export default function App() {
           targetArr.minutes,
           0
         );
+        if (targetArr.dayOffset < 0) {
+          arrDate.setDate(arrDate.getDate() + targetArr.dayOffset);
+        }
 
         // 🚗 車ルート: Google Directions API による最悪渋滞想定 (PESSIMISTIC) の自動逆算取得
         const drivePromise = fetchGoogleDrivingRouteWithTraffic({
@@ -819,10 +824,10 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // 電車モード時：日付・集合時刻・バッファ変更時にGoogle APIキーがあれば最新ダイヤで再計算
+  // 日付・集合時刻・バッファ・移動モード変更時にGoogle APIキーがあれば最新ダイヤ/渋滞情報で再計算
   useEffect(() => {
-    if (transportMode === 'train' && routeResult?.destGeo && getSavedGoogleMapsApiKey()) {
-      calculateRoute(origin, destination, 'train');
+    if (routeResult?.destGeo && getSavedGoogleMapsApiKey()) {
+      calculateRoute(origin, destination, { transportMode });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [travelDate, arrivalTime, bufferMinutes, transportMode]);
@@ -906,7 +911,10 @@ export default function App() {
     }
     setManualDriveMinutes('');
     setManualTransitMinutes('');
-    calculateRoute(origin, newDest || destination);
+    calculateRoute(origin, newDest || destination, {
+      travelDate: newDate || travelDate,
+      arrivalTime: newTime || arrivalTime,
+    });
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
@@ -927,7 +935,10 @@ export default function App() {
       setManualDriveMinutes('');
       setManualTransitMinutes('');
       setActiveTab('calc');
-      calculateRoute(origin, sched.venue || destination);
+      calculateRoute(origin, sched.venue || destination, {
+        travelDate: sched.dateIso || travelDate,
+        arrivalTime: sched.meetingTime || arrivalTime,
+      });
 
       // 即時スクロール＋DOM更新後の遅延スクロールで確実に最上部（ヘッダー・出発カード）に着地
       window.scrollTo(0, 0);
@@ -1003,7 +1014,7 @@ export default function App() {
   const handleSaveOriginFeedback = () => {
     localStorage.setItem(STORAGE_KEYS.ORIGIN, origin);
     setOriginSavedToast(true);
-    setTimeout(() => setOriginSavedToast(false), 2000);
+    setTimeout(() => setOriginSavedToast(false), 1500);
   };
 
   // 現地到着目標時刻（集合時刻 - バッファ）
@@ -1043,7 +1054,7 @@ export default function App() {
     targetArrivalMinusBuffer.formatted,
     routeResult?.baseDurationMinutes || 35
   );
-  const activeMultiplier = trafficMode === 'auto' ? autoTraffic.multiplier : Number(trafficMode);
+  const activeMultiplier = autoTraffic.multiplier;
 
   const parsedManualMinutes = parseInt(manualDriveMinutes, 10);
   const hasManualOverride = !Number.isNaN(parsedManualMinutes) && parsedManualMinutes > 0;
@@ -1407,8 +1418,13 @@ export default function App() {
                         <button
                           type="button"
                           onClick={() => {
-                            setArrivalTime(activeScheduleEvent.meetingTime || '09:00');
+                            const newTime = activeScheduleEvent.meetingTime || '09:00';
+                            const newBuffer = bufferMinutes === 0 ? 15 : bufferMinutes;
+                            setArrivalTime(newTime);
                             if (bufferMinutes === 0) setBufferMinutes(15);
+                            if (getSavedGoogleMapsApiKey()) {
+                              calculateRoute(origin, destination, { arrivalTime: newTime, bufferMinutes: newBuffer });
+                            }
                           }}
                           className={`px-2.5 py-1 rounded-lg text-[11px] font-black border transition ${
                             arrivalTime === activeScheduleEvent.meetingTime
@@ -1421,8 +1437,12 @@ export default function App() {
                         <button
                           type="button"
                           onClick={() => {
-                            setArrivalTime(activeMatchKoMinus150);
+                            const newTime = activeMatchKoMinus150;
+                            setArrivalTime(newTime);
                             setBufferMinutes(0);
+                            if (getSavedGoogleMapsApiKey()) {
+                              calculateRoute(origin, destination, { arrivalTime: newTime, bufferMinutes: 0 });
+                            }
                           }}
                           className={`px-2.5 py-1 rounded-lg text-[11px] font-black border transition ${
                             arrivalTime === activeMatchKoMinus150 && bufferMinutes === 0
@@ -1796,7 +1816,10 @@ export default function App() {
               </section>
 
               {/* 📸 日程表画像から一発逆算（AI解析） */}
-              <ScheduleImageImporter onApplySchedule={handleApplySchedule} />
+              <ScheduleImageImporter
+                onApplySchedule={handleApplySchedule}
+                onSaveToSchedules={() => setScheduleRefreshKey((k) => k + 1)}
+              />
 
               {/* 2. 目的地 ＆ 集合日時 入力フォーム */}
               <section className="bg-white rounded-3xl p-4 shadow-sm border border-slate-200/80 space-y-4 overflow-hidden">
@@ -1819,7 +1842,10 @@ export default function App() {
                       setSelectedPresetId(null);
                       setManualDriveMinutes('');
                       setManualTransitMinutes('');
-                      recordRecentVenue(item.title || item.fullQuery, item.fullQuery);
+                      if (item.lat && item.lon) {
+                        saveCachedCoords(item.fullQuery, { lat: item.lat, lon: item.lon });
+                      }
+                      recordRecentVenue(item.title || item.fullQuery);
                       calculateRoute(origin, item.fullQuery);
                     }}
                     placeholder="会場名・公園名・学校名を入力（例: 西武台第2グラウンド、埼スタ）"
@@ -1842,7 +1868,10 @@ export default function App() {
                               setSelectedPresetId(null);
                               setManualDriveMinutes('');
                               setManualTransitMinutes('');
-                              recordRecentVenue(c.name, c.name);
+                              if (c.lat && c.lon) {
+                                saveCachedCoords(c.name, { lat: c.lat, lon: c.lon });
+                              }
+                              recordRecentVenue(c.name);
                               calculateRoute(origin, c.name);
                             }}
                             className="text-xs bg-white hover:bg-emerald-100 text-slate-800 font-bold px-2.5 py-1.5 rounded-xl border border-emerald-300 shadow-sm transition active:scale-95 text-left"
@@ -2236,14 +2265,21 @@ export default function App() {
                         <div className="text-xs font-bold text-slate-800 truncate">{origin}</div>
                       </div>
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => setIsOriginEditing(!isOriginEditing)}
-                      className="ml-2 text-xs font-bold text-sky-700 hover:text-sky-900 bg-white px-2.5 py-1 rounded-xl border border-sky-200 shrink-0 flex items-center gap-1 shadow-sm"
-                    >
-                      <Edit2 className="w-3 h-3" />
-                      <span>{isOriginEditing ? '閉じる' : '変更'}</span>
-                    </button>
+                    <div className="flex items-center gap-1.5 shrink-0 ml-2">
+                      {originSavedToast && (
+                        <span className="text-[11px] font-bold text-emerald-600 animate-in fade-in duration-150">
+                          ✓ 保存しました
+                        </span>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => setIsOriginEditing(!isOriginEditing)}
+                        className="text-xs font-bold text-sky-700 hover:text-sky-900 bg-white px-2.5 py-1 rounded-xl border border-sky-200 shrink-0 flex items-center gap-1 shadow-sm"
+                      >
+                        <Edit2 className="w-3 h-3" />
+                        <span>{isOriginEditing ? '閉じる' : '変更'}</span>
+                      </button>
+                    </div>
                   </div>
 
                   {isOriginEditing && (
@@ -2255,6 +2291,9 @@ export default function App() {
                         onChange={(val) => setOrigin(val)}
                         onSelectSuggestion={(item) => {
                           setOrigin(item.fullQuery);
+                          if (item.lat && item.lon) {
+                            saveCachedCoords(item.fullQuery, { lat: item.lat, lon: item.lon });
+                          }
                           calculateRoute(item.fullQuery, destination);
                         }}
                         placeholder="自宅の住所・駅名・目印を入力"
@@ -2263,16 +2302,23 @@ export default function App() {
                       />
                       <div className="flex items-center justify-between">
                         <span className="text-[10px] text-slate-500">※次回以降も自動で記憶されます</span>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            handleSaveOriginFeedback();
-                            setIsOriginEditing(false);
-                          }}
-                          className="text-xs font-bold text-white bg-sky-600 hover:bg-sky-700 px-3 py-1 rounded-lg"
-                        >
-                          決定
-                        </button>
+                        <div className="flex items-center gap-2">
+                          {originSavedToast && (
+                            <span className="text-[11px] font-bold text-emerald-600 animate-in fade-in duration-150">
+                              ✓ 保存しました
+                            </span>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => {
+                              handleSaveOriginFeedback();
+                              setIsOriginEditing(false);
+                            }}
+                            className="text-xs font-bold text-white bg-sky-600 hover:bg-sky-700 px-3 py-1 rounded-lg"
+                          >
+                            決定
+                          </button>
+                        </div>
                       </div>
                     </div>
                   )}
@@ -2392,7 +2438,8 @@ export default function App() {
           {activeTab === 'schedule' && (
             <div className="space-y-4">
               <ScheduleCalendarView
-                key={scheduleRefreshKey}
+                refreshTrigger={scheduleRefreshKey}
+                onSchedulesChange={() => setScheduleRefreshKey((k) => k + 1)}
                 onSelectForCalculation={handleSelectScheduleForCalculation}
                 onOpenImageImporter={() => setIsScheduleImporterOpen(true)}
               />

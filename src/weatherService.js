@@ -48,7 +48,8 @@ export async function fetchEventWeather(venue, dateIso) {
   try {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
-    const target = new Date(dateIso + 'T00:00:00');
+    const [y, m, d] = dateIso.split('-').map(Number);
+    const target = new Date(y, m - 1, d);
     if (isNaN(target.getTime())) return null;
 
     const diffDays = Math.round((target - today) / (1000 * 60 * 60 * 24));
@@ -86,7 +87,7 @@ export async function fetchEventWeather(venue, dateIso) {
 
       const lat = Number(coords.lat).toFixed(4);
       const lon = Number(coords.lon).toFixed(4);
-      const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&daily=weathercode,temperature_2m_max,temperature_2m_min,precipitation_probability_max&timezone=Asia%2FTokyo`;
+      const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&daily=weathercode,temperature_2m_max,temperature_2m_min,precipitation_probability_max&timezone=Asia%2FTokyo&forecast_days=16`;
 
       const res = await fetch(url);
       if (!res.ok) return null;

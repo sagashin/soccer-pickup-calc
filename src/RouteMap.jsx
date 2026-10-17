@@ -66,7 +66,11 @@ export default function RouteMap({
 
   const [activeLayerId, setActiveLayerId] = useState(() => (transportMode === 'train' ? 'gmap-road' : 'gmap-traffic'));
 
-  // 初期マップ生成
+  // 移動手段（transportMode）変更時のマップレイヤー自動切替
+  useEffect(() => {
+    setActiveLayerId(transportMode === 'train' ? 'gmap-road' : 'gmap-traffic');
+  }, [transportMode]);
+
   // 初期マップ生成
   useEffect(() => {
     if (!mapContainerRef.current) return;
@@ -87,6 +91,13 @@ export default function RouteMap({
       spotsLayerGroupRef.current = L.layerGroup().addTo(mapInstanceRef.current);
       stationsLayerGroupRef.current = L.layerGroup().addTo(mapInstanceRef.current);
     }
+
+    return () => {
+      if (mapInstanceRef.current) {
+        mapInstanceRef.current.remove();
+        mapInstanceRef.current = null;
+      }
+    };
   }, []);
 
   // レイヤー切り替え

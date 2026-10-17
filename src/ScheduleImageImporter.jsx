@@ -25,7 +25,7 @@ import {
   parseScheduleImageWithGemini,
   calculateMeetingTime,
 } from './geminiScheduleParser';
-import { mergeImportedEvents } from './scheduleStore';
+import { mergeImportedEvents, getLocalDateIso } from './scheduleStore';
 
 const MEETING_PRESETS = [
   { label: '2時間前集合', minutes: 120, shortLabel: '2時間前 (120分)' },
@@ -149,7 +149,7 @@ export default function ScheduleImageImporter({
 
     onApplySchedule({
       destination: selectedEvent.venue || selectedEvent.title,
-      travelDate: selectedEvent.dateIso || new Date().toISOString().split('T')[0],
+      travelDate: selectedEvent.dateIso || getLocalDateIso(),
       arrivalTime: calculatedMeetingTime,
       eventName: selectedEvent.title,
     });

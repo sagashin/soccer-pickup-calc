@@ -23,8 +23,8 @@ export default async function handler(req, res) {
     }
   }
 
-  if (!longUrl || typeof longUrl !== 'string') {
-    return res.status(400).json({ error: 'URL parameter is required' });
+  if (!longUrl || typeof longUrl !== 'string' || !/^https?:\/\//i.test(longUrl) || !longUrl.includes('sync=')) {
+    return res.status(400).json({ error: 'Valid sync URL parameter is required' });
   }
 
   // 1. da.gd API (Viglink等の中間リダイレクトを挟まず直接302転送されるため、LINE内ブラウザでの400エラーを完全回避)

@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import {
   Calendar as CalendarIcon,
   Clock,
@@ -34,10 +34,12 @@ import {
   generateFamilyShareUrl,
   getShortFamilyShareUrl,
   createLineShareUrl,
+  getLocalDateIso,
 } from './scheduleStore';
 import { SAMPLE_SCHEDULE_EVENTS } from './geminiScheduleParser';
 import { useEventWeather } from './weatherService';
-import { calculateFastEstimateDeparture } from './geoUtils';
+import { calculateFastEstimateDeparture, saveCachedCoords } from './geoUtils';
+import PlaceAutocompleteInput from './PlaceAutocompleteInput';
 
 const WEEKDAYS = ['日', '月', '火', '水', '木', '金', '土'];
 const CATEGORY_OPTIONS = ['公式戦', '新人戦', '練習試合', '練習', 'その他'];
@@ -45,9 +47,17 @@ const CATEGORY_OPTIONS = ['公式戦', '新人戦', '練習試合', '練習', '�
 export default function ScheduleCalendarView({
   onSelectForCalculation,
   onOpenImageImporter,
+  refreshTrigger,
+  onSchedulesChange,
 }) {
   const [schedules, setSchedules] = useState(() => getSavedSchedules());
   const [viewMode, setViewMode] = useState('list'); // 'list' | 'calendar'
+  const [showPastSchedules, setShowPastSchedules] = useState(false);
+  
+  // 親コンポーネント (App.jsx) からの更新トリガー連動
+  useEffect(() => {
+    setSchedules(getSavedSchedules());
+  }, [refreshTrigger]);
   
   // 現在表示中のカレンダー年月
   const [currentDate, setCurrentDate] = useState(() => {
@@ -103,22 +113,6 @@ export default function ScheduleCalendarView({
 
     setShortShareUrl(finalShareUrl);
     setIsGeneratingShortUrl(false);
-
-    // スマホのネイティブ共有機能が使える場合
-    if (navigator.share) {
-      const shareTitle = '⚽ サッカー試合日程の共有';
-      const shareText = `チームの最新試合日程（${schedules.length}件）を共有したよ！\n👇開くだけでカレンダーに自動反映`;
-      try {
-        await navigator.share({
-          title: shareTitle,
-          text: shareText,
-          url: finalShareUrl,
-        });
-        setIsShareModalOpen(false);
-      } catch (err) {
-        // 共有キャンセル時はモーダルを開いたままにする
-      }
-    }
   };
 
   // LINE送信ボタンのアクション（未短縮の巨大URLでLINEのHTTP 400エラーになるのを徹底防止）
@@ -165,15 +159,52 @@ export default function ScheduleCalendarView({
     }
   };
 
+  // OS標準の共有シートを開く（AirDrop, メール, メモなど）
+  const handleNativeShare = async () => {
+    let targetUrl = shortShareUrl;
+    if (!targetUrl || targetUrl.length > 2500) {
+      setIsGeneratingShortUrl(true);
+      try {
+        const short = await getShortFamilyShareUrl(schedules);
+        if (short && short.startsWith('http')) {
+          targetUrl = short;
+          setShortShareUrl(short);
+        }
+      } catch (_) {}
+      setIsGeneratingShortUrl(false);
+    }
+    if (!targetUrl) {
+      targetUrl = generateFamilyShareUrl(schedules);
+    }
+
+    if (navigator.share) {
+      try {
+        await navigator.share({
+          title: '⚽ サッカー試合日程カレンダー',
+          text: `サッカーの試合日程（${schedules.length}件）です。開くとカレンダーに一発追加されます！`,
+          url: targetUrl,
+        });
+      } catch (err) {
+        if (err.name !== 'AbortError') {
+          handleCopyShareLink();
+        }
+      }
+    } else {
+      handleCopyShareLink();
+    }
+  };
+
   // 再読み込み
   const reloadSchedules = useCallback(() => {
     setSchedules(getSavedSchedules());
-  }, []);
+    onSchedulesChange?.();
+  }, [onSchedulesChange]);
 
   // サンプルデータを一括登録
   const handleLoadSamples = () => {
     const result = mergeImportedEvents(SAMPLE_SCHEDULE_EVENTS, 120);
     setSchedules(result.schedules);
+    onSchedulesChange?.();
   };
 
   // 予定削除
@@ -181,12 +212,13 @@ export default function ScheduleCalendarView({
     if (window.confirm(`「${title}」の予定を削除してもよろしいですか？`)) {
       const updated = deleteSchedule(id);
       setSchedules(updated);
+      onSchedulesChange?.();
     }
   };
 
   // モーダルを開く（新規作成）
   const handleOpenNewModal = (defaultDate = '') => {
-    const initialDate = defaultDate || selectedCalendarDate || new Date().toISOString().slice(0, 10);
+    const initialDate = defaultDate || selectedCalendarDate || getLocalDateIso();
     setEditingEvent(null);
     setFormData({
       dateIso: initialDate,
@@ -242,6 +274,7 @@ export default function ScheduleCalendarView({
 
     const updated = upsertSchedule(eventToSave);
     setSchedules(updated);
+    onSchedulesChange?.();
     setIsModalOpen(false);
   };
 
@@ -297,8 +330,14 @@ export default function ScheduleCalendarView({
 
   // 直近・未来の予定リスト
   const upcomingSchedules = useMemo(() => {
-    const todayIso = new Date().toISOString().slice(0, 10);
+    const todayIso = getLocalDateIso();
     return schedules.filter((s) => s.dateIso >= todayIso);
+  }, [schedules]);
+
+  // 過去の終了した予定リスト
+  const pastSchedules = useMemo(() => {
+    const todayIso = getLocalDateIso();
+    return schedules.filter((s) => s.dateIso < todayIso);
   }, [schedules]);
 
   // 選択日の予定
@@ -369,7 +408,7 @@ export default function ScheduleCalendarView({
                   : 'text-slate-600 hover:text-slate-900'
               }`}
             >
-              📋 直近の予定リスト ({schedules.length}件)
+              📋 今後の予定 ({upcomingSchedules.length}件)
             </button>
             <button
               type="button"
@@ -429,7 +468,7 @@ export default function ScheduleCalendarView({
                 onClick={() => {
                   const now = new Date();
                   setCurrentDate(new Date(now.getFullYear(), now.getMonth(), 1));
-                  setSelectedCalendarDate(now.toISOString().slice(0, 10));
+                  setSelectedCalendarDate(getLocalDateIso(now));
                 }}
                 className="px-2.5 py-1 text-xs font-extrabold text-slate-700 hover:bg-slate-100 rounded-lg transition"
               >
@@ -471,8 +510,7 @@ export default function ScheduleCalendarView({
               {calendarDays.map((day) => {
                 const dayEvents = schedulesByDate[day.dateIso] || [];
                 const isSelected = selectedCalendarDate === day.dateIso;
-                const isToday =
-                  day.dateIso === new Date().toISOString().slice(0, 10);
+                const isToday = day.dateIso === getLocalDateIso();
 
                 return (
                   <button
@@ -618,16 +656,55 @@ export default function ScheduleCalendarView({
               </div>
             </div>
           ) : (
-            <div className="space-y-2.5">
-              {schedules.map((ev) => (
-                <ScheduleCard
-                  key={ev.id}
-                  event={ev}
-                  onSelectForCalculation={onSelectForCalculation}
-                  onEdit={handleOpenEditModal}
-                  onDelete={handleDelete}
-                />
-              ))}
+            <div className="space-y-4">
+              {/* 今後の予定リスト */}
+              {upcomingSchedules.length > 0 ? (
+                <div className="space-y-2.5">
+                  {upcomingSchedules.map((ev) => (
+                    <ScheduleCard
+                      key={ev.id}
+                      event={ev}
+                      onSelectForCalculation={onSelectForCalculation}
+                      onEdit={handleOpenEditModal}
+                      onDelete={handleDelete}
+                    />
+                  ))}
+                </div>
+              ) : (
+                <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 text-center text-xs font-bold text-slate-500">
+                  今後の予定はありません
+                </div>
+              )}
+
+              {/* 過去の終了した予定（折りたたみアコーディオン） */}
+              {pastSchedules.length > 0 && (
+                <div className="pt-2 border-t border-slate-100">
+                  <button
+                    type="button"
+                    onClick={() => setShowPastSchedules((prev) => !prev)}
+                    className="w-full py-2 px-3 bg-slate-100 hover:bg-slate-200 active:scale-[0.99] rounded-xl text-xs font-bold text-slate-600 flex items-center justify-center gap-1.5 transition"
+                  >
+                    <span>
+                      {showPastSchedules
+                        ? '▲ 過去の予定を閉じる'
+                        : `▼ 過去の終了した予定を表示 (${pastSchedules.length}件)`}
+                    </span>
+                  </button>
+                  {showPastSchedules && (
+                    <div className="space-y-2.5 mt-2.5 opacity-80">
+                      {pastSchedules.map((ev) => (
+                        <ScheduleCard
+                          key={ev.id}
+                          event={ev}
+                          onSelectForCalculation={onSelectForCalculation}
+                          onEdit={handleOpenEditModal}
+                          onDelete={handleDelete}
+                        />
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -742,15 +819,23 @@ export default function ScheduleCalendarView({
 
               {/* 会場名 */}
               <div>
-                <label className="text-xs font-black text-slate-700 block mb-1">
+                <label htmlFor="modal-venue-input" className="text-xs font-black text-slate-700 block mb-1">
                   試合会場・グラウンド名
                 </label>
-                <input
-                  type="text"
-                  placeholder="例: つくばFC T-Field / 羽生中央公園"
+                <PlaceAutocompleteInput
+                  id="modal-venue-input"
                   value={formData.venue}
-                  onChange={(e) => setFormData({ ...formData, venue: e.target.value })}
-                  className="w-full h-10 px-3 bg-slate-50 border border-slate-300 rounded-xl text-sm font-bold focus:ring-2 focus:ring-emerald-500 focus:outline-none"
+                  onChange={(val) => setFormData({ ...formData, venue: val })}
+                  onSelectSuggestion={(item) => {
+                    const venueName = item.title || item.fullQuery;
+                    setFormData({ ...formData, venue: venueName });
+                    if (item.lat && item.lon) {
+                      saveCachedCoords(venueName, { lat: item.lat, lon: item.lon });
+                    }
+                  }}
+                  placeholder="例: つくばFC T-Field / 羽生中央公園"
+                  className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-sm font-bold focus:ring-2 focus:ring-emerald-500 focus:outline-none"
+                  ringColorClass="focus:ring-emerald-500"
                 />
               </div>
 
@@ -836,6 +921,17 @@ export default function ScheduleCalendarView({
                 )}
               </button>
 
+              {/* その他のアプリ・OS標準共有（AirDrop, メール, メモなど） */}
+              <button
+                type="button"
+                onClick={handleNativeShare}
+                disabled={isGeneratingShortUrl}
+                className="w-full bg-slate-800 hover:bg-slate-900 active:scale-95 text-white font-black py-3 px-4 rounded-xl shadow-sm flex items-center justify-center gap-2 transition text-xs disabled:opacity-75"
+              >
+                <Share2 className="w-4 h-4" />
+                <span>その他のアプリで送る (AirDrop / メール)</span>
+              </button>
+
               {/* リンクをコピー */}
               <button
                 type="button"
@@ -858,7 +954,7 @@ export default function ScheduleCalendarView({
  */
 function ScheduleCard({ event, onSelectForCalculation, onEdit, onDelete }) {
   const catStyle = CATEGORY_COLORS[event.category] || CATEGORY_COLORS.その他;
-  const isPast = event.dateIso < new Date().toISOString().slice(0, 10);
+  const isPast = event.dateIso < getLocalDateIso();
   const { weather } = useEventWeather(event.venue, event.dateIso);
 
   // ユーザーの登録出発地（自宅など）
@@ -873,7 +969,7 @@ function ScheduleCard({ event, onSelectForCalculation, onEdit, onDelete }) {
   // 公式戦の場合の2時間30分前到着前提の出発時間（仮）を計算（外部通信ゼロ・ミリ秒算出）
   const departureEstimate = useMemo(() => {
     return calculateFastEstimateDeparture(event, userOrigin);
-  }, [event, userOrigin]);
+  }, [event, userOrigin, weather]);
 
   return (
     <div

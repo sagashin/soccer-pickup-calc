@@ -297,7 +297,7 @@ export default function PlaceAutocompleteInput({
                   {item.subtitle}
                 </div>
               </div>
-              {item.source === 'google' && (
+              {item.source?.startsWith('google') && (
                 <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-50 text-blue-600 font-medium shrink-0 self-center">
                   Google
                 </span>

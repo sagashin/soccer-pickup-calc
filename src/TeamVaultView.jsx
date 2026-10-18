@@ -5,6 +5,7 @@ import {
   Trophy,
   MessageSquare,
   Upload,
+  ClipboardPaste,
   Plus,
   Search,
   Key,
@@ -61,6 +62,53 @@ const FITNESS_PRESETS = [
   { eventName: '身長', unit: 'cm', category: '体格', placeholder: '152.5' },
   { eventName: '体重', unit: 'kg', category: '体格', placeholder: '42.0' },
 ];
+
+const SAMPLE_PASTE_TEXTS = {
+  venue: `【今週末の練習試合 会場＆駐車場連絡】
+会場：羽生市中央公園 多目的広場（埼玉県羽生市）
+集合時間：8:30
+
+■ 駐車場ルール
+・チーム割当は各学年5台までです。
+・指定の第1駐車場をご利用ください。
+・ダッシュボードに「チーム名プレート」を必ず掲示してください。
+・路上での乗り降りや荷下ろしは近隣住民の迷惑になるため厳禁です。
+・満車の場合は北側臨時駐車場をご利用ください。
+
+■ 会場利用の注意事項
+・アスファルト通路はスパイク歩行禁止です（必ず運動靴に履き替え）。
+・応援エリアはネット外側の指定エリアのみ。
+・ゴミは各自で必ず持ち帰ってください。`,
+  fitness: `【秋季フィジカル測定結果】
+測定日：2026-10-15
+選手名：佐藤 翔太
+
+・30m走：4.82秒
+・50m走：7.65秒
+・20mシャトルラン：92回
+・リフティング：320回
+・ロングキック：34m
+・反復横跳び：54回
+
+コメント：前回の春測定より30m走が0.2秒短縮。初速の加速が格段に良くなっています。`,
+  coach: `【コーチからの試合総評と次回への課題】
+日付：2026-10-18
+タイトル：中盤での首振りと視野の確保について
+
+本日のTMお疲れ様でした。全体的にパスがつながる場面が増えてきましたが、中盤でボールを受ける選手に以下の点を意識してほしいです。
+
+1. ボールを受ける前に必ず首を左右に振って確認（敵の位置と味方の空きスペースを把握）
+2. 常に半身の姿勢を作り、前を向けるファーストタッチを置く
+3. 詰まったときは無理せず逆サイドへの大きなサイドチェンジを選択する
+
+次回練習でのアクション：
+・パスを受ける1秒前に首を振る癖をつける
+・利き足の前に置くファーストタッチを反復練習する
+
+参考リンク：
+https://www.youtube.com/watch?v=sample-vision サッカーの首振り視野確保トレーニング`,
+};
+
 
 export default function TeamVaultView({
   onApplyVenueToCalc,
@@ -131,6 +179,12 @@ export default function TeamVaultView({
     linkTitle: '',
     linkUrl: '',
   });
+
+  // テキスト貼付モーダル状態
+  const [isPasteModalOpen, setIsPasteModalOpen] = useState(false);
+  const [pasteText, setPasteText] = useState('');
+  const [pasteTargetMode, setPasteTargetMode] = useState('venue');
+  const [pasteError, setPasteError] = useState('');
 
   useEffect(() => {
     if (initialSubTab) {
@@ -276,6 +330,142 @@ export default function TeamVaultView({
     } finally {
       setAiLoading(false);
     }
+  };
+
+  // ==================== テキスト貼付AI解析 ＆ 手動転記ハンドラ ====================
+  const handleOpenPasteModal = (mode = subTab) => {
+    setPasteTargetMode(mode);
+    setPasteText('');
+    setPasteError('');
+    setIsPasteModalOpen(true);
+  };
+
+  const handleProcessPastedText = async () => {
+    if (!pasteText.trim()) {
+      setPasteError('解析するテキストを入力または貼り付けてください。');
+      return;
+    }
+    if (!apiKey.trim()) {
+      setShowKeyConfig(true);
+      setPasteError('テキストのAI自動解析にはGemini APIキーの設定が必要です（右上のキー設定から入力してください）。');
+      return;
+    }
+
+    setPasteError('');
+    setAiLoading(true);
+    try {
+      const parsed = await parseVaultDocumentWithGemini({
+        text: pasteText.trim(),
+        targetMode: pasteTargetMode,
+        apiKey,
+      });
+
+      if (pasteTargetMode === 'venue') {
+        const { list, savedItem } = upsertVenueDoc({
+          title: parsed.title || '会場・駐車場案内',
+          venueName: parsed.venueName || '',
+          docType: parsed.docType || '駐車場ルール',
+          summary: parsed.summary || '',
+          parkingRules: parsed.parkingRules || '',
+          cautions: Array.isArray(parsed.cautions) ? parsed.cautions : [],
+          dateIso: getLocalDateIso(),
+          hasAttachment: false,
+        });
+        setVenueDocs(list);
+        setAiStatusMsg(`✅ 「${savedItem.title}」をテキストからAI解析・登録しました！`);
+      } else if (pasteTargetMode === 'fitness') {
+        const extracted = Array.isArray(parsed?.records) ? parsed.records : [];
+        if (extracted.length === 0) {
+          throw new Error('テキストから測定記録の数値を抽出できませんでした。手動フォームへの転記をお試しください。');
+        }
+        let latestList = getFitnessRecords();
+        for (let i = 0; i < extracted.length; i++) {
+          const rec = extracted[i];
+          const { list } = upsertFitnessRecord({
+            dateIso: rec.dateIso || getLocalDateIso(),
+            eventName: rec.eventName || '測定記録',
+            value: rec.value,
+            unit: rec.unit || '秒',
+            category: rec.category || 'スピード',
+            notes: rec.notes || 'テキストAI解析登録',
+            hasAttachment: false,
+          });
+          latestList = list;
+        }
+        setFitnessRecords(latestList);
+        setAiStatusMsg(`✅ 体力測定の記録（${extracted.length}件）をテキストからAI抽出し、登録しました！`);
+      } else {
+        const { list, savedItem } = upsertCoachNote({
+          dateIso: getLocalDateIso(),
+          title: parsed.title || 'コーチからの助言',
+          category: parsed.category || '個人課題',
+          content: parsed.content || '',
+          actionItems: Array.isArray(parsed.actionItems) ? parsed.actionItems : [],
+          links: Array.isArray(parsed.links) ? parsed.links : [],
+          hasAttachment: false,
+        });
+        setCoachNotes(list);
+        setAiStatusMsg(`✅ コーチ助言「${savedItem.title}」をテキストからAI要約・登録しました！`);
+      }
+
+      setIsPasteModalOpen(false);
+      setPasteText('');
+      setSubTab(pasteTargetMode);
+    } catch (err) {
+      setPasteError(err.message || 'AI解析中にエラーが発生しました。');
+    } finally {
+      setAiLoading(false);
+    }
+  };
+
+  const handleTransferPasteToManual = () => {
+    if (!pasteText.trim()) {
+      setPasteError('転記するテキストが空です。');
+      return;
+    }
+    const lines = pasteText.trim().split('\n').map((l) => l.trim()).filter(Boolean);
+    const firstLine = lines[0] || '';
+
+    setIsPasteModalOpen(false);
+
+    if (pasteTargetMode === 'venue') {
+      setEditingVenueDoc(null);
+      setVenueAttachmentFile(null);
+      setVenueForm({
+        title: firstLine.slice(0, 30) || '会場連絡',
+        venueName: '',
+        docType: '駐車場ルール',
+        summary: lines.slice(0, 2).join(' '),
+        parkingRules: pasteText.trim(),
+        cautionsText: '',
+        dateIso: getLocalDateIso(),
+      });
+      setIsVenueModalOpen(true);
+    } else if (pasteTargetMode === 'fitness') {
+      setEditingFitness(null);
+      setFitnessForm({
+        dateIso: getLocalDateIso(),
+        eventName: '30m走',
+        value: '',
+        unit: '秒',
+        category: 'スピード',
+        notes: pasteText.trim(),
+      });
+      setIsFitnessModalOpen(true);
+    } else {
+      setEditingCoachNote(null);
+      setCoachForm({
+        dateIso: getLocalDateIso(),
+        title: firstLine.slice(0, 30) || 'コーチからの助言',
+        category: '個人課題',
+        content: pasteText.trim(),
+        actionItemsText: '',
+        linkTitle: '',
+        linkUrl: '',
+      });
+      setIsCoachModalOpen(true);
+    }
+    setSubTab(pasteTargetMode);
   };
 
   // ==================== 1. 会場資料フィルタ＆ハンドラ ====================
@@ -667,23 +857,32 @@ export default function TeamVaultView({
           </button>
         </div>
 
-        {/* 📄 PDF / 画像 スマートAI取込バー */}
+        {/* 📄 PDF / 画像 / テキスト スマートAI取込バー */}
         <div className="bg-gradient-to-r from-emerald-50/90 via-teal-50/80 to-sky-50/80 border border-emerald-200/90 rounded-2xl p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
           <div className="space-y-0.5">
             <div className="text-xs font-black text-emerald-950 flex items-center gap-1.5">
               <Sparkles className="w-4 h-4 text-emerald-600 shrink-0" />
               <span>
-                {subTab === 'venue' && '会場案内PDF・駐車場マップ画像をAI自動要約＆原本保存'}
-                {subTab === 'fitness' && '体力測定結果の表（PDF・写真）から全種目をAI一括登録'}
-                {subTab === 'coach' && 'コーチの配布プリント・ホワイトボード写真をAI要約'}
+                {subTab === 'venue' && '会場案内PDF・駐車場マップ画像・連絡テキストをAI自動要約'}
+                {subTab === 'fitness' && '体力測定の表（PDF・写真・連絡文）から全種目をAI一括登録'}
+                {subTab === 'coach' && 'コーチのプリント・写真・アドバイス文をAI要約＆蓄積'}
               </span>
             </div>
             <p className="text-[11px] font-bold text-slate-600">
-              Gemini 3.8 Flash対応。PDFや画像をアップすると要点を抽出し、原本ファイルもいつでも開けます
+              Gemini 3.8 Flash対応。ファイル読取のほか、LINEなどの連絡文をテキスト貼り付けして即時登録も可能です
             </p>
           </div>
 
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="flex items-center gap-2 shrink-0 flex-wrap sm:flex-nowrap">
+            <button
+              type="button"
+              disabled={aiLoading}
+              onClick={() => handleOpenPasteModal(subTab)}
+              className="w-full sm:w-auto bg-white hover:bg-emerald-50 active:scale-95 border border-emerald-300 text-emerald-900 font-black text-xs px-3.5 py-2.5 rounded-xl shadow-xs flex items-center justify-center gap-1.5 transition"
+            >
+              <ClipboardPaste className="w-4 h-4 text-emerald-600" />
+              <span>テキスト貼付</span>
+            </button>
             <input
               ref={fileInputRef}
               type="file"
@@ -705,7 +904,7 @@ export default function TeamVaultView({
               ) : (
                 <>
                   <Upload className="w-4 h-4" />
-                  <span>PDF / 画像をAI取込</span>
+                  <span>PDF / 画像取込</span>
                 </>
               )}
             </button>
@@ -1694,6 +1893,184 @@ export default function TeamVaultView({
                   className="max-w-full max-h-[72vh] object-contain rounded-xl shadow"
                 />
               )}
+            </div>
+          </div>
+        </div>
+      )}
+      {/* ==================== テキスト貼り付け登録モーダル ==================== */}
+      {isPasteModalOpen && (
+        <div className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-sm flex items-center justify-center p-3 sm:p-5">
+          <div className="bg-white rounded-3xl max-w-xl w-full max-h-[92vh] flex flex-col shadow-2xl border border-slate-200 overflow-hidden">
+            <div className="p-4 border-b border-slate-200 flex items-center justify-between gap-2 bg-gradient-to-r from-emerald-50/60 to-slate-50">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-xl bg-emerald-100 flex items-center justify-center text-emerald-700 shrink-0">
+                  <ClipboardPaste className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-black text-slate-900">
+                    テキスト貼り付け登録
+                  </h3>
+                  <p className="text-[11px] font-bold text-slate-500">
+                    LINE・メール・測定メモ等のテキストからAI要約または手動登録
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsPasteModalOpen(false)}
+                className="w-8 h-8 rounded-xl bg-slate-100 hover:bg-slate-200 flex items-center justify-center text-slate-600"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-4 overflow-y-auto space-y-3.5 flex-1">
+              {/* カテゴリ選択タブ */}
+              <div>
+                <label className="text-xs font-black text-slate-700 block mb-1.5">
+                  登録先カテゴリ
+                </label>
+                <div className="grid grid-cols-3 gap-2 bg-slate-100 p-1 rounded-2xl">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPasteTargetMode('venue');
+                      setPasteError('');
+                    }}
+                    className={`py-2 px-2 rounded-xl text-xs font-black flex items-center justify-center gap-1 transition ${
+                      pasteTargetMode === 'venue'
+                        ? 'bg-white text-emerald-900 shadow-sm'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    <FileText className="w-3.5 h-3.5 text-emerald-600" />
+                    <span>会場・駐車場</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPasteTargetMode('fitness');
+                      setPasteError('');
+                    }}
+                    className={`py-2 px-2 rounded-xl text-xs font-black flex items-center justify-center gap-1 transition ${
+                      pasteTargetMode === 'fitness'
+                        ? 'bg-white text-emerald-900 shadow-sm'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    <Trophy className="w-3.5 h-3.5 text-amber-500" />
+                    <span>体力測定</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPasteTargetMode('coach');
+                      setPasteError('');
+                    }}
+                    className={`py-2 px-2 rounded-xl text-xs font-black flex items-center justify-center gap-1 transition ${
+                      pasteTargetMode === 'coach'
+                        ? 'bg-white text-emerald-900 shadow-sm'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    <MessageSquare className="w-3.5 h-3.5 text-sky-600" />
+                    <span>コーチ助言</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* テキスト入力エリア */}
+              <div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="text-xs font-black text-slate-700">
+                    連絡文・メモを貼り付け
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setPasteText(SAMPLE_PASTE_TEXTS[pasteTargetMode] || '')}
+                      className="text-[11px] font-extrabold text-emerald-700 hover:text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 px-2 py-0.5 rounded-lg transition"
+                    >
+                      💡 例文を挿入
+                    </button>
+                    {pasteText && (
+                      <button
+                        type="button"
+                        onClick={() => setPasteText('')}
+                        className="text-[11px] font-bold text-slate-400 hover:text-slate-600"
+                      >
+                        クリア
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                <textarea
+                  rows={8}
+                  value={pasteText}
+                  onChange={(e) => {
+                    setPasteText(e.target.value);
+                    if (pasteError) setPasteError('');
+                  }}
+                  placeholder={
+                    pasteTargetMode === 'venue'
+                      ? 'LINEの連絡文や案内メールをここにペースト...\n例:\n会場：〇〇グラウンド\n集合：8:30\n駐車場は各学年5台まで。第2駐車場を利用してください。\nスパイクでの舗装路歩行は禁止です。'
+                      : pasteTargetMode === 'fitness'
+                      ? '体力測定結果の連絡文やメモをここにペースト...\n例:\n春季体力測定\n30m走: 4.85秒\n50m走: 7.80秒\nシャトルラン: 85回\nリフティング: 250回'
+                      : 'コーチからのメッセージや試合後のアドバイスをここにペースト...\n例:\n本日の試合の振り返り\nパスを受ける前に首を振って周囲を見ることを意識しましょう。\n利き足の前方にファーストタッチを置くこと。'
+                  }
+                  className="w-full p-3 bg-slate-50 border border-slate-300 rounded-2xl text-xs font-medium focus:bg-white focus:ring-2 focus:ring-emerald-500 focus:outline-none transition leading-relaxed"
+                />
+                <div className="text-right text-[10px] font-bold text-slate-400 mt-1">
+                  {pasteText.length} 文字
+                </div>
+              </div>
+
+              {pasteError && (
+                <div className="bg-rose-50 border border-rose-200 text-rose-800 text-xs font-bold px-3 py-2 rounded-xl flex items-start gap-2">
+                  <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                  <div className="flex-1">{pasteError}</div>
+                </div>
+              )}
+            </div>
+
+            <div className="p-4 border-t border-slate-200 bg-slate-50/60 flex flex-col sm:flex-row items-center justify-between gap-2.5">
+              <button
+                type="button"
+                onClick={handleTransferPasteToManual}
+                disabled={!pasteText.trim()}
+                className="w-full sm:w-auto px-3.5 py-2 rounded-xl text-xs font-black text-slate-700 bg-white hover:bg-slate-100 border border-slate-300 disabled:opacity-40 transition"
+              >
+                ✍️ フォームに転記 (APIキー不要)
+              </button>
+
+              <div className="flex items-center gap-2 w-full sm:w-auto justify-end">
+                <button
+                  type="button"
+                  onClick={() => setIsPasteModalOpen(false)}
+                  className="px-3.5 py-2 rounded-xl text-xs font-bold text-slate-600 hover:bg-slate-200/70"
+                >
+                  キャンセル
+                </button>
+                <button
+                  type="button"
+                  onClick={handleProcessPastedText}
+                  disabled={aiLoading || !pasteText.trim()}
+                  className="bg-emerald-600 hover:bg-emerald-700 active:scale-95 disabled:opacity-60 text-white font-black text-xs px-4 py-2 rounded-xl shadow flex items-center justify-center gap-1.5 transition"
+                >
+                  {aiLoading ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span>AI解析中...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Sparkles className="w-4 h-4" />
+                      <span>✨ AIで自動解析・登録</span>
+                    </>
+                  )}
+                </button>
+              </div>
             </div>
           </div>
         </div>

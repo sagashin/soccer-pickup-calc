@@ -607,16 +607,17 @@ export function findMatchingVenueDocs(destinationStr) {
   });
 }
 
-// ==================== Gemini AI によるPDF/画像解析 ====================
+// ==================== Gemini AI によるPDF/画像/テキスト解析 ====================
 
-export async function parseVaultDocumentWithGemini({ base64, mimeType, targetMode, apiKey }) {
+export async function parseVaultDocumentWithGemini({ text, base64, mimeType, targetMode, apiKey }) {
   const todayIso = getLocalDateIso();
+  const hasText = Boolean(text && text.trim());
 
   let prompt = '';
   if (targetMode === 'venue') {
     prompt = `あなたはジュニア・ユースサッカーチームの運営・遠征サポートAIです。
-提供されたファイル（会場案内PDF、駐車場ルール画像、大会要項、チーム連絡プリント等）を解析し、保護者が送迎時に最も知りたい「会場名」「駐車ルール・台数制限」「会場での注意事項」を構造化JSONで抽出してください。
-
+提供された${hasText ? 'テキスト連絡（LINE、メール、案内文など）' : 'ファイル（会場案内PDF、駐車場ルール画像、大会要項、チーム連絡プリント等）'}を解析し、保護者が送迎時に最も知りたい「会場名」「駐車ルール・台数制限」「会場での注意事項」を構造化JSONで抽出してください。
+${hasText ? `\n【入力テキスト】\n${text.trim()}\n` : ''}
 出力は必ず以下のJSONスキーマのみとし、Markdown記法や余計な説明を含めないでください：
 {
   "title": "資料のわかりやすいタイトル（例: 〇〇公園 駐車場・観戦ルール）",
@@ -628,9 +629,9 @@ export async function parseVaultDocumentWithGemini({ base64, mimeType, targetMod
 }`;
   } else if (targetMode === 'fitness') {
     prompt = `あなたはサッカー選手のフィジカル・体力測定データ解析AIです。
-提供されたファイル（体力測定結果表、記録カード画像、PDF等）を解析し、含まれているすべての測定種目・記録を構造化JSONで一括抽出してください。
-1枚の画像に複数の種目（例: 30m走、50m走、シャトルラン、リフティング等）や複数回の記録がある場合はすべて配列に含めてください。日付が不明な場合は "${todayIso}" を設定してください。
-
+提供された${hasText ? 'テキスト連絡（測定結果一覧、タイム連絡文など）' : 'ファイル（体力測定結果表、記録カード画像、PDF等）'}を解析し、含まれているすべての測定種目・記録を構造化JSONで一括抽出してください。
+複数の種目（例: 30m走、50m走、シャトルラン、リフティング等）や複数回の記録がある場合はすべて配列に含めてください。日付が不明な場合は "${todayIso}" を設定してください。
+${hasText ? `\n【入力テキスト】\n${text.trim()}\n` : ''}
 出力は必ず以下のJSONスキーマのみとし、Markdown記法や余計な説明を含めないでください：
 {
   "records": [
@@ -646,8 +647,8 @@ export async function parseVaultDocumentWithGemini({ base64, mimeType, targetMod
 }`;
   } else {
     prompt = `あなたはジュニア・ユースサッカーの育成コーチング解析AIです。
-提供されたファイル（コーチからの配布プリント、戦術ボード・ホワイトボードの写真、練習メニュー表、試合総評メモ、PDF等）を解析し、選手が振り返るべき要点を構造化JSONで抽出してください。
-
+提供された${hasText ? 'テキスト連絡（コーチからのアドバイス、LINEメッセージ、練習振り返りメモ等）' : 'ファイル（コーチからの配布プリント、戦術ボード・ホワイトボードの写真、練習メニュー表、試合総評メモ、PDF等）'}を解析し、選手が振り返るべき要点を構造化JSONで抽出してください。
+${hasText ? `\n【入力テキスト】\n${text.trim()}\n` : ''}
 出力は必ず以下のJSONスキーマのみとし、Markdown記法や余計な説明を含めないでください：
 {
   "title": "ノートのタイトル（例: パスを受ける前の首振りと半身の作り方）",

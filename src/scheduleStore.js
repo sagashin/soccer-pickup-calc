@@ -127,12 +127,23 @@ export function mergeImportedEvents(importedEvents, defaultMeetingLeadMinutes = 
   let updatedCount = 0;
 
   const updatedList = [...current];
+  const weekdays = ['日', '月', '火', '水', '木', '金', '土'];
 
   importedEvents.forEach((imp) => {
     // 集合時間の計算（キックオフ時刻から引く）
     const kickoff = imp.time || imp.kickoffTime || '10:00';
     const lead = imp.meetingLeadMinutes ?? defaultMeetingLeadMinutes;
     const meetingTime = imp.meetingTime || calculateMeetingTimeFromKickoff(kickoff, lead);
+
+    // dateLabel の整形（"2026-10-18" のままの場合は "10月18日(日)" に自動変換）
+    let formattedDateLabel = imp.date || imp.dateLabel || imp.dateIso || '';
+    if (imp.dateIso && (!formattedDateLabel || formattedDateLabel === imp.dateIso)) {
+      const parts = imp.dateIso.split('-').map(Number);
+      if (parts.length === 3 && !isNaN(parts[0]) && !isNaN(parts[1]) && !isNaN(parts[2])) {
+        const dt = new Date(parts[0], parts[1] - 1, parts[2]);
+        formattedDateLabel = `${parts[1]}月${parts[2]}日(${weekdays[dt.getDay()]})`;
+      }
+    }
 
     // 重複判定：同一日かつ（タイトル完全一致 ＆ 時刻一致）または（会場一致 ＆ タイトル一致）の場合のみ上書き
     const matchIndex = updatedList.findIndex((item) => {
@@ -148,7 +159,7 @@ export function mergeImportedEvents(importedEvents, defaultMeetingLeadMinutes = 
     const normalizedEvent = {
       id: matchIndex >= 0 ? updatedList[matchIndex].id : `evt_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
       dateIso: imp.dateIso,
-      dateLabel: imp.date || imp.dateLabel || imp.dateIso,
+      dateLabel: formattedDateLabel,
       title: imp.title || '試合 / 練習',
       category: imp.category || '公式戦',
       kickoffTime: imp.isKickoff ? kickoff : (imp.kickoffTime || kickoff),
@@ -158,8 +169,10 @@ export function mergeImportedEvents(importedEvents, defaultMeetingLeadMinutes = 
       venue: imp.venue || '',
       venueAddress: imp.venueAddress || imp.venue || '',
       opponent: imp.opponent || '',
-      notes: imp.rawText ? `読み取り元: ${imp.rawText}` : (imp.notes || ''),
-      rawText: imp.rawText || '',
+      notes: imp.rawText
+        ? `読み取り元: ${imp.rawText}`
+        : (imp.notes || (matchIndex >= 0 ? updatedList[matchIndex].notes || '' : '')),
+      rawText: imp.rawText || (matchIndex >= 0 ? updatedList[matchIndex].rawText || '' : ''),
       createdAt: matchIndex >= 0 ? updatedList[matchIndex].createdAt : Date.now(),
       updatedAt: Date.now(),
     };
@@ -293,20 +306,41 @@ export function generateFamilyShareUrl(schedulesInput, options = {}) {
   };
   const opt = { ...defaultOptions, ...options };
 
-  const schedules = schedulesInput || getSavedSchedules();
+  // 常にLocalStorageの最新データを優先取得（引数がある場合は最新データと照合）
+  const latestSaved = getSavedSchedules();
+  const schedules = latestSaved.length > 0 ? latestSaved : (schedulesInput || []);
 
   let sTuples = [];
   if (opt.includeSchedules && Array.isArray(schedules) && schedules.length > 0) {
+    const todayIso = getLocalDateIso();
     const cutoff = new Date();
     cutoff.setDate(cutoff.getDate() - 30);
     const cutoffIso = getLocalDateIso(cutoff);
+    const recentCreatedThreshold = Date.now() - 7 * 24 * 60 * 60 * 1000; // 直近7日以内に追加・編集された予定は日付に関わらず必ず含める
 
-    const filtered = schedules
-      .filter((s) => s.dateIso >= cutoffIso)
-      .sort((a, b) => a.dateIso.localeCompare(b.dateIso))
-      .slice(0, 20);
+    // 1. 今日以降の予定、または直近追加・更新された予定、または過去30日以内の予定を優先順に並べる
+    const prioritized = [...schedules]
+      .filter((s) => {
+        const isRecentlyTouched = (s.updatedAt || s.createdAt || 0) >= recentCreatedThreshold;
+        return isRecentlyTouched || (s.dateIso && s.dateIso >= cutoffIso);
+      })
+      .sort((a, b) => {
+        const aFuture = (a.dateIso || '') >= todayIso ? 1 : 0;
+        const bFuture = (b.dateIso || '') >= todayIso ? 1 : 0;
+        // 未来・当日の予定を過去の予定より優先
+        if (aFuture !== bFuture) return bFuture - aFuture;
+        // 直近で追加・編集された予定を優先しつつ日付順にソート
+        return (a.dateIso || '').localeCompare(b.dateIso || '');
+      })
+      .slice(0, 35);
 
-    sTuples = filtered.map((s) => {
+    // もし全件が30日以上前の場合でも、直近追加されたものから最大35件を含める
+    const targetList = prioritized.length > 0 ? prioritized : schedules.slice(-35);
+
+    // 日付順に整列してタプル化
+    const sortedTarget = sortSchedules(targetList);
+
+    sTuples = sortedTarget.map((s) => {
       const rawNote = (s.notes || '').trim();
       const cleanNote = rawNote.startsWith('読み取り元:') ? '' : rawNote.slice(0, 60);
       return [
@@ -398,6 +432,17 @@ export function parseFamilyShareUrl(hashOrQuery) {
 
     if (!parsed) return null;
 
+    const weekdays = ['日', '月', '火', '水', '木', '金', '土'];
+    const formatLabel = (iso) => {
+      if (!iso) return '';
+      const parts = String(iso).split('-').map(Number);
+      if (parts.length === 3 && !isNaN(parts[0]) && !isNaN(parts[1]) && !isNaN(parts[2])) {
+        const dt = new Date(parts[0], parts[1] - 1, parts[2]);
+        return `${parts[1]}月${parts[2]}日(${weekdays[dt.getDay()]})`;
+      }
+      return iso;
+    };
+
     // 【旧形式】デコード結果が配列の場合（試合日程タプルまたは旧オブジェクトの配列）
     if (Array.isArray(parsed)) {
       if (parsed.length === 0) return null;
@@ -406,7 +451,7 @@ export function parseFamilyShareUrl(hashOrQuery) {
           const [d, c, m, k, v, t, n] = item;
           return {
             dateIso: d,
-            dateLabel: d,
+            dateLabel: formatLabel(d),
             category: c || '公式戦',
             meetingTime: m || '09:00',
             kickoffTime: k || '',
@@ -418,7 +463,7 @@ export function parseFamilyShareUrl(hashOrQuery) {
         } else {
           return {
             dateIso: item.d,
-            dateLabel: item.d,
+            dateLabel: formatLabel(item.d),
             title: item.t,
             category: item.c || '公式戦',
             meetingTime: item.m,
@@ -449,7 +494,7 @@ export function parseFamilyShareUrl(hashOrQuery) {
         const [d, c, m, k, v, t, n] = item;
         return {
           dateIso: d,
-          dateLabel: d,
+          dateLabel: formatLabel(d),
           category: c || '公式戦',
           meetingTime: m || '09:00',
           kickoffTime: k || '',

@@ -512,66 +512,82 @@ export default function App() {
   const [familySyncToast, setFamilySyncToast] = useState('');
 
   // 家族共有リンク (?sync=... または #sync=...) の自動同期受信チェック
+  // （初回起動時だけでなく、既にブラウザで開いている状態で新しいLINE共有リンクを踏んだ場合の hashchange / popstate にも対応）
   useEffect(() => {
-    const sharedData = parseFamilyShareUrl();
-    if (!sharedData) return;
+    const checkAndImportFamilySync = () => {
+      const sharedData = parseFamilyShareUrl();
+      if (!sharedData) return;
 
-    const syncToastParts = [];
-    let shouldOpenSchedule = false;
-    let shouldOpenVault = false;
+      const syncToastParts = [];
+      let shouldOpenSchedule = false;
+      let shouldOpenVault = false;
 
-    // 【旧形式】デコード結果が配列の場合（試合日程）
-    if (Array.isArray(sharedData)) {
-      if (sharedData.length > 0) {
-        mergeImportedEvents(sharedData);
-        syncToastParts.push(`日程${sharedData.length}件`);
-        shouldOpenSchedule = true;
-      }
-    } else if (typeof sharedData === 'object') {
-      // 【新v2形式】デコード結果がオブジェクトの場合
-      if (Array.isArray(sharedData.schedules) && sharedData.schedules.length > 0) {
-        mergeImportedEvents(sharedData.schedules);
-        syncToastParts.push(`日程${sharedData.schedules.length}件`);
-        shouldOpenSchedule = true;
-      }
-      if (Array.isArray(sharedData.venueDocs) && sharedData.venueDocs.length > 0) {
-        mergeImportedVenueDocs(sharedData.venueDocs);
-        syncToastParts.push(`会場ルール${sharedData.venueDocs.length}件`);
-        shouldOpenVault = true;
-      }
-      if (Array.isArray(sharedData.fitnessRecords) && sharedData.fitnessRecords.length > 0) {
-        mergeImportedFitnessRecords(sharedData.fitnessRecords);
-        syncToastParts.push(`体力測定${sharedData.fitnessRecords.length}件`);
-        shouldOpenVault = true;
-      }
-      if (Array.isArray(sharedData.coachNotes) && sharedData.coachNotes.length > 0) {
-        mergeImportedCoachNotes(sharedData.coachNotes);
-        syncToastParts.push(`コーチ助言${sharedData.coachNotes.length}件`);
-        shouldOpenVault = true;
-      }
-    }
-
-    if (syncToastParts.length > 0) {
-      setFamilySyncToast(`👨‍👩‍👦 家族共有データを取り込みました！（${syncToastParts.join('・')}）`);
-      setScheduleRefreshKey((k) => k + 1);
-      setVaultRefreshKey((k) => k + 1);
-
-      if (shouldOpenSchedule) {
-        setActiveTab('schedule');
-      } else if (shouldOpenVault) {
-        setActiveTab('vault');
+      // 【旧形式】デコード結果が配列の場合（試合日程）
+      if (Array.isArray(sharedData)) {
+        if (sharedData.length > 0) {
+          const res = mergeImportedEvents(sharedData);
+          syncToastParts.push(
+            `日程${sharedData.length}件（新規${res.addedCount}・更新${res.updatedCount}）`
+          );
+          shouldOpenSchedule = true;
+        }
+      } else if (typeof sharedData === 'object') {
+        // 【新v2形式】デコード結果がオブジェクトの場合
+        if (Array.isArray(sharedData.schedules) && sharedData.schedules.length > 0) {
+          const res = mergeImportedEvents(sharedData.schedules);
+          syncToastParts.push(
+            `日程${sharedData.schedules.length}件（新規${res.addedCount}・更新${res.updatedCount}）`
+          );
+          shouldOpenSchedule = true;
+        }
+        if (Array.isArray(sharedData.venueDocs) && sharedData.venueDocs.length > 0) {
+          mergeImportedVenueDocs(sharedData.venueDocs);
+          syncToastParts.push(`会場ルール${sharedData.venueDocs.length}件`);
+          shouldOpenVault = true;
+        }
+        if (Array.isArray(sharedData.fitnessRecords) && sharedData.fitnessRecords.length > 0) {
+          mergeImportedFitnessRecords(sharedData.fitnessRecords);
+          syncToastParts.push(`体力測定${sharedData.fitnessRecords.length}件`);
+          shouldOpenVault = true;
+        }
+        if (Array.isArray(sharedData.coachNotes) && sharedData.coachNotes.length > 0) {
+          mergeImportedCoachNotes(sharedData.coachNotes);
+          syncToastParts.push(`コーチ助言${sharedData.coachNotes.length}件`);
+          shouldOpenVault = true;
+        }
       }
 
-      // URLのハッシュやクエリをクリーンアップ
-      try {
-        const cleanUrl = window.location.origin + window.location.pathname;
-        window.history.replaceState(null, '', cleanUrl);
-      } catch (_) {}
+      if (syncToastParts.length > 0) {
+        setFamilySyncToast(`👨‍👩‍👦 家族共有データを取り込みました！（${syncToastParts.join('・')}）`);
+        setScheduleRefreshKey((k) => k + 1);
+        setVaultRefreshKey((k) => k + 1);
 
-      setTimeout(() => {
-        setFamilySyncToast('');
-      }, 7000);
-    }
+        if (shouldOpenSchedule) {
+          setActiveTab('schedule');
+        } else if (shouldOpenVault) {
+          setActiveTab('vault');
+        }
+
+        // URLのハッシュやクエリをクリーンアップ
+        try {
+          const cleanUrl = window.location.origin + window.location.pathname;
+          window.history.replaceState(null, '', cleanUrl);
+        } catch (_) {}
+
+        setTimeout(() => {
+          setFamilySyncToast('');
+        }, 7000);
+      }
+    };
+
+    checkAndImportFamilySync();
+
+    window.addEventListener('hashchange', checkAndImportFamilySync);
+    window.addEventListener('popstate', checkAndImportFamilySync);
+    return () => {
+      window.removeEventListener('hashchange', checkAndImportFamilySync);
+      window.removeEventListener('popstate', checkAndImportFamilySync);
+    };
   }, []);
 
   // タブ切り替え時は常に確実に画面最上部（ヘッダー・出発カード）へスクロール
@@ -2690,6 +2706,7 @@ export default function App() {
           {activeTab === 'vault' && (
             <div className="space-y-4">
               <TeamVaultView
+                refreshTrigger={vaultRefreshKey}
                 onApplyVenueToCalc={(venueName) => {
                   setDestination(venueName);
                   setSelectedPresetId(null);

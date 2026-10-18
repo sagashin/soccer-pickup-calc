@@ -100,6 +100,15 @@ export default function ScheduleImageImporter({
       } else {
         setParsedEvents(events);
         setSelectedEventId(events[0].id);
+        // 解析完了と同時に自動でスケジュール帳にもスマート蓄積（LINE共有時に漏れないようにする）
+        const currentLead = customLeadMinutes !== '' ? Number(customLeadMinutes) : meetingLeadMinutes;
+        const result = mergeImportedEvents(events, currentLead);
+        setSaveSuccessMessage(
+          `🎉 画像から${events.length}件を検出し、カレンダーへ自動保存しました！（新規${result.addedCount}件・更新${result.updatedCount}件）`
+        );
+        if (onSaveToSchedules) {
+          onSaveToSchedules(result.schedules);
+        }
       }
     } catch (err) {
       console.error(err);
@@ -143,9 +152,14 @@ export default function ScheduleImageImporter({
     }, 4500);
   };
 
-  // 選択した予定をメインアプリに反映
+  // 選択した予定をメインアプリに反映（同時にカレンダーにも保存してLINE共有漏れを防止）
   const handleApply = () => {
     if (!selectedEvent) return;
+
+    const merged = mergeImportedEvents([selectedEvent], effectiveMeetingLead);
+    if (onSaveToSchedules) {
+      onSaveToSchedules(merged.schedules);
+    }
 
     onApplySchedule({
       destination: selectedEvent.venue || selectedEvent.title,

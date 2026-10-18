@@ -122,6 +122,7 @@ export default function TeamVaultView({
   initialSubTab = 'venue',
   highlightVenueName = '',
   onVaultChanged,
+  refreshTrigger,
 }) {
   const [subTab, setSubTab] = useState(initialSubTab);
 
@@ -129,6 +130,12 @@ export default function TeamVaultView({
   const [venueDocs, setVenueDocs] = useState(() => getVenueDocs());
   const [fitnessRecords, setFitnessRecords] = useState(() => getFitnessRecords());
   const [coachNotes, setCoachNotes] = useState(() => getCoachNotes());
+
+  useEffect(() => {
+    setVenueDocs(getVenueDocs());
+    setFitnessRecords(getFitnessRecords());
+    setCoachNotes(getCoachNotes());
+  }, [refreshTrigger]);
 
   // Gemini APIキー管理
   const [apiKey, setApiKey] = useState(() => localStorage.getItem(GEMINI_API_KEY_STORAGE) || '');

@@ -672,3 +672,172 @@ ${hasText ? `\n【入力テキスト】\n${text.trim()}\n` : ''}
   });
 }
 
+// ==================== 家族共有マージ関数 ====================
+
+/**
+ * 共有リンクから取り込んだ会場・駐車場資料を既存データと重複なくマージ
+ */
+export function mergeImportedVenueDocs(importedDocs) {
+  if (!Array.isArray(importedDocs) || importedDocs.length === 0) {
+    return { list: getVenueDocs(), addedCount: 0, updatedCount: 0 };
+  }
+
+  let list = [...getVenueDocs()];
+  let addedCount = 0;
+  let updatedCount = 0;
+
+  importedDocs.forEach((imp) => {
+    if (!imp || (!imp.title && !imp.venueName)) return;
+
+    const normTitle = (imp.title || '').trim().toLowerCase();
+    const normVenue = (imp.venueName || '').trim().toLowerCase();
+
+    const idx = list.findIndex((item) => {
+      const itemTitle = (item.title || '').trim().toLowerCase();
+      const itemVenue = (item.venueName || '').trim().toLowerCase();
+      return (normTitle && itemTitle === normTitle) || (normVenue && itemVenue === normVenue);
+    });
+
+    if (idx >= 0) {
+      const existing = list[idx];
+      list[idx] = {
+        ...existing,
+        title: imp.title || existing.title,
+        venueName: imp.venueName || existing.venueName,
+        docType: imp.docType || existing.docType,
+        summary: imp.summary || existing.summary,
+        parkingRules: imp.parkingRules || existing.parkingRules,
+        cautions: Array.isArray(imp.cautions) && imp.cautions.length > 0 ? imp.cautions : existing.cautions,
+        dateIso: imp.dateIso || existing.dateIso,
+      };
+      updatedCount++;
+    } else {
+      const newItem = {
+        id: imp.id || `doc-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        title: imp.title || `${imp.venueName || '会場'} 案内資料`,
+        venueName: imp.venueName || '',
+        docType: imp.docType || '駐車場ルール',
+        summary: imp.summary || '',
+        parkingRules: imp.parkingRules || '',
+        cautions: Array.isArray(imp.cautions) ? imp.cautions : [],
+        dateIso: imp.dateIso || getLocalDateIso(),
+        hasAttachment: false,
+        attachmentMimeType: '',
+        attachmentFileName: '',
+        createdAt: imp.createdAt || Date.now(),
+      };
+      list = [newItem, ...list];
+      addedCount++;
+    }
+  });
+
+  saveVenueDocs(list);
+  return { list, addedCount, updatedCount };
+}
+
+/**
+ * 共有リンクから取り込んだ体力測定記録を既存データと重複なくマージ
+ */
+export function mergeImportedFitnessRecords(importedRecords) {
+  if (!Array.isArray(importedRecords) || importedRecords.length === 0) {
+    return { list: getFitnessRecords(), addedCount: 0, updatedCount: 0 };
+  }
+
+  let list = [...getFitnessRecords()];
+  let addedCount = 0;
+  let updatedCount = 0;
+
+  importedRecords.forEach((imp) => {
+    if (!imp || !imp.eventName || imp.value === undefined || imp.value === null) return;
+
+    const dateIso = imp.dateIso || getLocalDateIso();
+    const eventName = imp.eventName.trim();
+
+    const idx = list.findIndex(
+      (item) => item.dateIso === dateIso && (item.eventName || '').trim() === eventName
+    );
+
+    if (idx >= 0) {
+      const existing = list[idx];
+      list[idx] = {
+        ...existing,
+        value: typeof imp.value === 'number' ? imp.value : parseFloat(imp.value) || existing.value,
+        unit: imp.unit || existing.unit,
+        category: imp.category || existing.category,
+        notes: imp.notes || existing.notes,
+      };
+      updatedCount++;
+    } else {
+      const newItem = {
+        id: imp.id || `fit-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        dateIso,
+        eventName,
+        value: typeof imp.value === 'number' ? imp.value : parseFloat(imp.value) || 0,
+        unit: imp.unit || '秒',
+        category: imp.category || 'スピード',
+        notes: imp.notes || '',
+        hasAttachment: false,
+        createdAt: imp.createdAt || Date.now(),
+      };
+      list = [newItem, ...list];
+      addedCount++;
+    }
+  });
+
+  saveFitnessRecords(list);
+  return { list, addedCount, updatedCount };
+}
+
+/**
+ * 共有リンクから取り込んだコーチ助言・リンクを既存データと重複なくマージ
+ */
+export function mergeImportedCoachNotes(importedNotes) {
+  if (!Array.isArray(importedNotes) || importedNotes.length === 0) {
+    return { list: getCoachNotes(), addedCount: 0, updatedCount: 0 };
+  }
+
+  let list = [...getCoachNotes()];
+  let addedCount = 0;
+  let updatedCount = 0;
+
+  importedNotes.forEach((imp) => {
+    if (!imp || !imp.title) return;
+
+    const dateIso = imp.dateIso || getLocalDateIso();
+    const title = imp.title.trim().toLowerCase();
+
+    const idx = list.findIndex(
+      (item) => item.dateIso === dateIso && (item.title || '').trim().toLowerCase() === title
+    );
+
+    if (idx >= 0) {
+      const existing = list[idx];
+      list[idx] = {
+        ...existing,
+        category: imp.category || existing.category,
+        content: imp.content || existing.content,
+        actionItems: Array.isArray(imp.actionItems) && imp.actionItems.length > 0 ? imp.actionItems : existing.actionItems,
+        links: Array.isArray(imp.links) && imp.links.length > 0 ? imp.links : existing.links,
+      };
+      updatedCount++;
+    } else {
+      const newItem = {
+        id: imp.id || `cnote-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        dateIso,
+        title: imp.title.trim(),
+        category: imp.category || '個人課題',
+        content: imp.content || '',
+        actionItems: Array.isArray(imp.actionItems) ? imp.actionItems : [],
+        links: Array.isArray(imp.links) ? imp.links : [],
+        hasAttachment: false,
+        createdAt: imp.createdAt || Date.now(),
+      };
+      list = [newItem, ...list];
+      addedCount++;
+    }
+  });
+
+  saveCoachNotes(list);
+  return { list, addedCount, updatedCount };
+}
+

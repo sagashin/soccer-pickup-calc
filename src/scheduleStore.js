@@ -2,6 +2,8 @@
  * サッカー試合スケジュール蓄積・管理ストア (LocalStorage永続化)
  */
 
+import { getVenueDocs, getFitnessRecords, getCoachNotes } from './teamVaultStore.js';
+
 export const SCHEDULE_STORAGE_KEY = 'soccer_pickup_schedules_v1';
 
 /**
@@ -279,41 +281,98 @@ function base64ToUtf8(str) {
 const shortUrlCache = new Map();
 
 /**
- * 家族連携用の共有URLを生成（軽量タプル配列化＋OCR生テキスト除外＋Base64URL化でサイズを大幅削減）
+ * 家族連携用の共有URLを生成（v2全データ一括パック形式対応）
+ * 試合日程・会場駐車場資料・体力測定・コーチ助言を超軽量タプル配列化して1本のURLに圧縮
  */
-export function generateFamilyShareUrl(schedules) {
-  if (!schedules || schedules.length === 0) return '';
-  // 過去すぎる予定（30日以上前）は除外してURL長を節約
-  const cutoff = new Date();
-  cutoff.setDate(cutoff.getDate() - 30);
-  const cutoffIso = getLocalDateIso(cutoff);
+export function generateFamilyShareUrl(schedulesInput, options = {}) {
+  const defaultOptions = {
+    includeSchedules: true,
+    includeVenue: true,
+    includeFitness: true,
+    includeCoach: true,
+  };
+  const opt = { ...defaultOptions, ...options };
 
-  // 日付昇順で直近〜未来の予定を最大25件まで選定（URL肥大化の防止）
-  const filtered = schedules
-    .filter((s) => s.dateIso >= cutoffIso)
-    .sort((a, b) => a.dateIso.localeCompare(b.dateIso))
-    .slice(0, 25);
+  const schedules = schedulesInput || getSavedSchedules();
 
-  if (filtered.length === 0) return '';
+  let sTuples = [];
+  if (opt.includeSchedules && Array.isArray(schedules) && schedules.length > 0) {
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - 30);
+    const cutoffIso = getLocalDateIso(cutoff);
 
-  // キー名を省いた軽量タプル配列 [date, category, meetingTime, kickoffTime, venue, title, notes]
-  // 画像OCR由来の長大な「読み取り元: ...」メモは除外し、手動メモも最大60文字に抑えてURL長を最小化
-  const compactTuples = filtered.map((s) => {
-    const rawNote = (s.notes || '').trim();
-    const cleanNote = rawNote.startsWith('読み取り元:') ? '' : rawNote.slice(0, 60);
-    return [
-      s.dateIso || '',
-      s.category || '公式戦',
-      s.meetingTime || '09:00',
-      s.kickoffTime || '',
-      s.venue || '',
-      s.title || '',
-      cleanNote,
-    ];
-  });
+    const filtered = schedules
+      .filter((s) => s.dateIso >= cutoffIso)
+      .sort((a, b) => a.dateIso.localeCompare(b.dateIso))
+      .slice(0, 20);
+
+    sTuples = filtered.map((s) => {
+      const rawNote = (s.notes || '').trim();
+      const cleanNote = rawNote.startsWith('読み取り元:') ? '' : rawNote.slice(0, 60);
+      return [
+        s.dateIso || '',
+        s.category || '公式戦',
+        s.meetingTime || '09:00',
+        s.kickoffTime || '',
+        s.venue || '',
+        s.title || '',
+        cleanNote,
+      ];
+    });
+  }
+
+  let vTuples = [];
+  if (opt.includeVenue) {
+    const venueDocs = getVenueDocs().slice(0, 10);
+    vTuples = venueDocs.map((doc) => [
+      (doc.title || '').trim(),
+      (doc.venueName || '').trim(),
+      doc.docType || '駐車場ルール',
+      (doc.summary || '').slice(0, 80),
+      (doc.parkingRules || '').slice(0, 120),
+      (doc.cautions || []).slice(0, 4),
+      doc.dateIso || '',
+    ]);
+  }
+
+  let fTuples = [];
+  if (opt.includeFitness) {
+    const fitnessRecords = getFitnessRecords().slice(0, 25);
+    fTuples = fitnessRecords.map((rec) => [
+      rec.dateIso || '',
+      rec.eventName || '',
+      typeof rec.value === 'number' ? rec.value : parseFloat(rec.value) || 0,
+      rec.unit || '秒',
+      rec.category || 'スピード',
+      (rec.notes || '').slice(0, 40),
+    ]);
+  }
+
+  let cTuples = [];
+  if (opt.includeCoach) {
+    const coachNotes = getCoachNotes().slice(0, 10);
+    cTuples = coachNotes.map((note) => [
+      note.dateIso || '',
+      (note.title || '').trim(),
+      note.category || '個人課題',
+      (note.content || '').slice(0, 140),
+      (note.actionItems || []).slice(0, 4),
+      (note.links || []).slice(0, 2).map((l) => [l.title || '', l.url || '']),
+    ]);
+  }
+
+  if (sTuples.length === 0 && vTuples.length === 0 && fTuples.length === 0 && cTuples.length === 0) {
+    return '';
+  }
+
+  const payload = { v: 2 };
+  if (sTuples.length > 0) payload.s = sTuples;
+  if (vTuples.length > 0) payload.d = vTuples;
+  if (fTuples.length > 0) payload.f = fTuples;
+  if (cTuples.length > 0) payload.c = cTuples;
 
   try {
-    const json = JSON.stringify(compactTuples);
+    const json = JSON.stringify(payload);
     const encoded = utf8ToBase64(json);
     const base = window.location.origin + window.location.pathname;
     return `${base}#sync=${encoded}`;
@@ -325,7 +384,7 @@ export function generateFamilyShareUrl(schedules) {
 
 /**
  * URLハッシュまたはパラメータから共有データを解析して復元
- * （新タプル形式 [d, c, m, k, v, t, n] と旧オブジェクト形式 {d, t, c, ...} の双方に対応）
+ * （v2一括パック形式 {v:2, s, d, f, c} と旧タプル形式/旧オブジェクト形式の双方に完全対応）
  */
 export function parseFamilyShareUrl(hashOrQuery) {
   try {
@@ -335,14 +394,58 @@ export function parseFamilyShareUrl(hashOrQuery) {
 
     const base64Str = decodeURIComponent(match[1]);
     const jsonStr = base64ToUtf8(base64Str);
-    const dataList = JSON.parse(jsonStr);
+    const parsed = JSON.parse(jsonStr);
 
-    if (!Array.isArray(dataList) || dataList.length === 0) return null;
+    if (!parsed) return null;
 
-    // フォーマット判定（タプル配列 or 従来オブジェクト）
-    return dataList.map((item) => {
-      if (Array.isArray(item)) {
-        // [date, category, meetingTime, kickoffTime, venue, title, notes]
+    // 【旧形式】デコード結果が配列の場合（試合日程タプルまたは旧オブジェクトの配列）
+    if (Array.isArray(parsed)) {
+      if (parsed.length === 0) return null;
+      const schedules = parsed.map((item) => {
+        if (Array.isArray(item)) {
+          const [d, c, m, k, v, t, n] = item;
+          return {
+            dateIso: d,
+            dateLabel: d,
+            category: c || '公式戦',
+            meetingTime: m || '09:00',
+            kickoffTime: k || '',
+            isKickoff: Boolean(k),
+            venue: v || '',
+            title: t || 'サッカー試合',
+            notes: n || '',
+          };
+        } else {
+          return {
+            dateIso: item.d,
+            dateLabel: item.d,
+            title: item.t,
+            category: item.c || '公式戦',
+            meetingTime: item.m,
+            kickoffTime: item.k,
+            isKickoff: Boolean(item.k),
+            venue: item.v,
+            notes: item.n,
+          };
+        }
+      });
+      // 後方互換性のため配列自身にプロパティを付与して返却
+      schedules.schedules = schedules;
+      schedules.venueDocs = [];
+      schedules.fitnessRecords = [];
+      schedules.coachNotes = [];
+      schedules.totalCount = schedules.length;
+      return schedules;
+    }
+
+    // 【新v2形式】デコード結果がオブジェクトの場合
+    if (typeof parsed === 'object') {
+      const sList = Array.isArray(parsed.s) ? parsed.s : [];
+      const dList = Array.isArray(parsed.d) ? parsed.d : (Array.isArray(parsed.v) ? parsed.v : []);
+      const fList = Array.isArray(parsed.f) ? parsed.f : [];
+      const cList = Array.isArray(parsed.c) ? parsed.c : [];
+
+      const schedules = sList.map((item) => {
         const [d, c, m, k, v, t, n] = item;
         return {
           dateIso: d,
@@ -355,21 +458,60 @@ export function parseFamilyShareUrl(hashOrQuery) {
           title: t || 'サッカー試合',
           notes: n || '',
         };
-      } else {
-        // 従来の後方互換オブジェクト { d, t, c, m, k, v, n }
+      });
+
+      const venueDocs = dList.map((item) => {
+        const [title, venueName, docType, summary, parkingRules, cautions, dateIso] = item;
         return {
-          dateIso: item.d,
-          dateLabel: item.d,
-          title: item.t,
-          category: item.c || '公式戦',
-          meetingTime: item.m,
-          kickoffTime: item.k,
-          isKickoff: Boolean(item.k),
-          venue: item.v,
-          notes: item.n,
+          title: title || '',
+          venueName: venueName || '',
+          docType: docType || '駐車場ルール',
+          summary: summary || '',
+          parkingRules: parkingRules || '',
+          cautions: Array.isArray(cautions) ? cautions : [],
+          dateIso: dateIso || getLocalDateIso(),
         };
-      }
-    });
+      });
+
+      const fitnessRecords = fList.map((item) => {
+        const [dateIso, eventName, value, unit, category, notes] = item;
+        return {
+          dateIso: dateIso || getLocalDateIso(),
+          eventName: eventName || '',
+          value: typeof value === 'number' ? value : parseFloat(value) || 0,
+          unit: unit || '秒',
+          category: category || 'スピード',
+          notes: notes || '',
+        };
+      });
+
+      const coachNotes = cList.map((item) => {
+        const [dateIso, title, category, content, actionItems, links] = item;
+        return {
+          dateIso: dateIso || getLocalDateIso(),
+          title: title || '',
+          category: category || '個人課題',
+          content: content || '',
+          actionItems: Array.isArray(actionItems) ? actionItems : [],
+          links: Array.isArray(links)
+            ? links.map((l) => (Array.isArray(l) ? { title: l[0], url: l[1] } : l))
+            : [],
+        };
+      });
+
+      const totalCount = schedules.length + venueDocs.length + fitnessRecords.length + coachNotes.length;
+
+      return {
+        v: 2,
+        schedules,
+        venueDocs,
+        fitnessRecords,
+        coachNotes,
+        totalCount,
+      };
+    }
+
+    return null;
   } catch (err) {
     console.error('Failed to parse family share url:', err);
     return null;
@@ -381,8 +523,13 @@ export function parseFamilyShareUrl(hashOrQuery) {
  * スマホ端末では line:// スキームで直接LINEアプリを起動（Webサーバーを介さず400 Bad Requestを完全回避）
  * PC環境では文字数制限を安全にハンドリング
  */
-export function createLineShareUrl(shareUrl, scheduleCount) {
-  const message = `⚽ サッカー試合日程（${scheduleCount}件）を共有したよ！\n👇タップして開くとカレンダーに自動反映\n${shareUrl}`;
+export function createLineShareUrl(shareUrl, summaryInfo) {
+  let message = '';
+  if (typeof summaryInfo === 'string') {
+    message = `⚽ サッカー家族共有データ（${summaryInfo}）を送ったよ！\n👇タップして開くとカレンダー＆チームノートに一発反映\n${shareUrl}`;
+  } else {
+    message = `⚽ サッカー試合日程（${summaryInfo || 0}件）を共有したよ！\n👇タップして開くとカレンダーに自動反映\n${shareUrl}`;
+  }
   const encodedMessage = encodeURIComponent(message);
 
   // スマホ端末（iOS / Android）の判定
@@ -407,8 +554,8 @@ export function createLineShareUrl(shareUrl, scheduleCount) {
 /**
  * 短縮URLを取得（POSTリクエスト & 直接リダイレクト型プロバイダでLINE内400エラーを完全防止）
  */
-export async function getShortFamilyShareUrl(schedules) {
-  const longUrl = generateFamilyShareUrl(schedules);
+export async function getShortFamilyShareUrl(schedules, options = {}) {
+  const longUrl = generateFamilyShareUrl(schedules, options);
   if (!longUrl) return '';
 
   // すでにキャッシュがあれば即座に返却

@@ -89,6 +89,17 @@ export default function ScheduleCalendarView({
   const [copyFeedback, setCopyFeedback] = useState(false);
   const [shortShareUrl, setShortShareUrl] = useState('');
   const [isGeneratingShortUrl, setIsGeneratingShortUrl] = useState(false);
+  const [includeVaultInShare, setIncludeVaultInShare] = useState(true);
+
+  const getShareOptions = useCallback(
+    () => ({
+      includeSchedules: true,
+      includeVenue: includeVaultInShare,
+      includeFitness: includeVaultInShare,
+      includeCoach: includeVaultInShare,
+    }),
+    [includeVaultInShare]
+  );
 
   // 家族共有の実行（LINE / Web Share）
   const handleShareToFamily = async () => {
@@ -101,11 +112,12 @@ export default function ScheduleCalendarView({
     setIsShareModalOpen(true);
     setIsGeneratingShortUrl(true);
 
-    let finalShareUrl = generateFamilyShareUrl(schedules);
+    const opts = getShareOptions();
+    let finalShareUrl = generateFamilyShareUrl(schedules, opts);
 
     // 短縮URLを生成（TinyURL / is.gd経由で超コンパクト化）
     try {
-      const short = await getShortFamilyShareUrl(schedules);
+      const short = await getShortFamilyShareUrl(schedules, opts);
       if (short && short.startsWith('http')) {
         finalShareUrl = short;
       }
@@ -117,11 +129,12 @@ export default function ScheduleCalendarView({
 
   // LINE送信ボタンのアクション（未短縮の巨大URLでLINEのHTTP 400エラーになるのを徹底防止）
   const handleSendToLine = async () => {
+    const opts = getShareOptions();
     let targetUrl = shortShareUrl;
     if (!targetUrl || targetUrl.length > 2500) {
       setIsGeneratingShortUrl(true);
       try {
-        const short = await getShortFamilyShareUrl(schedules);
+        const short = await getShortFamilyShareUrl(schedules, opts);
         if (short && short.startsWith('http')) {
           targetUrl = short;
           setShortShareUrl(short);
@@ -131,7 +144,7 @@ export default function ScheduleCalendarView({
     }
 
     if (!targetUrl) {
-      targetUrl = generateFamilyShareUrl(schedules);
+      targetUrl = generateFamilyShareUrl(schedules, opts);
     }
 
     // 万が一どうしても短縮できずURLが2,500文字を超える場合は直接LINEへ飛ばさずコピー案内
@@ -143,12 +156,16 @@ export default function ScheduleCalendarView({
       } catch (_) {}
     }
 
-    const lineUrl = createLineShareUrl(targetUrl, schedules.length);
+    const summaryText = includeVaultInShare
+      ? `試合日程${schedules.length}件＋チームノート`
+      : schedules.length;
+    const lineUrl = createLineShareUrl(targetUrl, summaryText);
     window.location.href = lineUrl;
   };
 
   const handleCopyShareLink = async () => {
-    const targetUrl = shortShareUrl || generateFamilyShareUrl(schedules);
+    const opts = getShareOptions();
+    const targetUrl = shortShareUrl || generateFamilyShareUrl(schedules, opts);
     if (!targetUrl) return;
     try {
       await navigator.clipboard.writeText(targetUrl);
@@ -161,11 +178,12 @@ export default function ScheduleCalendarView({
 
   // OS標準の共有シートを開く（AirDrop, メール, メモなど）
   const handleNativeShare = async () => {
+    const opts = getShareOptions();
     let targetUrl = shortShareUrl;
     if (!targetUrl || targetUrl.length > 2500) {
       setIsGeneratingShortUrl(true);
       try {
-        const short = await getShortFamilyShareUrl(schedules);
+        const short = await getShortFamilyShareUrl(schedules, opts);
         if (short && short.startsWith('http')) {
           targetUrl = short;
           setShortShareUrl(short);
@@ -174,14 +192,18 @@ export default function ScheduleCalendarView({
       setIsGeneratingShortUrl(false);
     }
     if (!targetUrl) {
-      targetUrl = generateFamilyShareUrl(schedules);
+      targetUrl = generateFamilyShareUrl(schedules, opts);
     }
+
+    const summaryText = includeVaultInShare
+      ? `試合日程（${schedules.length}件）＆チームノート`
+      : `試合日程（${schedules.length}件）`;
 
     if (navigator.share) {
       try {
         await navigator.share({
           title: '⚽ サッカー試合日程カレンダー',
-          text: `サッカーの試合日程（${schedules.length}件）です。開くとカレンダーに一発追加されます！`,
+          text: `サッカーの${summaryText}です。開くとカレンダーとチームノートに一発追加されます！`,
           url: targetUrl,
         });
       } catch (err) {
@@ -899,6 +921,21 @@ export default function ScheduleCalendarView({
                 LINEで妻や息子にリンクを送ると、届いたリンクを開くだけで最新の日程（{schedules.length}件）が相手のスマホのカレンダーに一発反映されます！
               </p>
             </div>
+
+            <label className="flex items-center gap-2.5 p-3 rounded-2xl bg-slate-50 border border-slate-200 cursor-pointer hover:bg-white transition">
+              <input
+                type="checkbox"
+                checked={includeVaultInShare}
+                onChange={(e) => {
+                  setIncludeVaultInShare(e.target.checked);
+                  setShortShareUrl('');
+                }}
+                className="w-4 h-4 rounded text-emerald-600 focus:ring-emerald-500"
+              />
+              <div className="text-xs font-bold text-slate-800">
+                <span>📚 チームノート（会場ルール・体力測定・助言）も一緒にパック</span>
+              </div>
+            </label>
 
             <div className="space-y-2 pt-1">
               {/* LINEで直接送る */}

@@ -24,6 +24,8 @@ import {
   MapPin,
   ParkingCircle,
   Link as LinkIcon,
+  Share2,
+  Copy,
 } from 'lucide-react';
 import {
   GEMINI_API_KEY_STORAGE,
@@ -45,7 +47,12 @@ import {
   getAttachmentFromIdb,
   parseVaultDocumentWithGemini,
 } from './teamVaultStore';
-import { getLocalDateIso } from './scheduleStore';
+import {
+  getLocalDateIso,
+  getShortFamilyShareUrl,
+  generateFamilyShareUrl,
+  createLineShareUrl,
+} from './scheduleStore';
 import { saveCachedCoords } from './geoUtils';
 import PlaceAutocompleteInput from './PlaceAutocompleteInput';
 
@@ -114,6 +121,7 @@ export default function TeamVaultView({
   onApplyVenueToCalc,
   initialSubTab = 'venue',
   highlightVenueName = '',
+  onVaultChanged,
 }) {
   const [subTab, setSubTab] = useState(initialSubTab);
 
@@ -125,6 +133,17 @@ export default function TeamVaultView({
   // Gemini APIキー管理
   const [apiKey, setApiKey] = useState(() => localStorage.getItem(GEMINI_API_KEY_STORAGE) || '');
   const [showKeyConfig, setShowKeyConfig] = useState(false);
+
+  // 👨‍👩‍👦 家族一括共有モーダル状態
+  const [isFamilyShareModalOpen, setIsFamilyShareModalOpen] = useState(false);
+  const [shareOptions, setShareOptions] = useState({
+    includeSchedules: true,
+    includeVenue: true,
+    includeFitness: true,
+    includeCoach: true,
+  });
+  const [isGeneratingShortUrl, setIsGeneratingShortUrl] = useState(false);
+  const [shareCopyFeedback, setShareCopyFeedback] = useState(false);
 
   // AI解析状態
   const [aiLoading, setAiLoading] = useState(false);
@@ -207,6 +226,7 @@ export default function TeamVaultView({
     setVenueDocs(res.venueDocs);
     setFitnessRecords(res.fitnessRecords);
     setCoachNotes(res.coachNotes);
+    onVaultChanged?.();
     setAiError('');
     setAiStatusMsg('✨ 会場資料・体力測定・コーチ助言のサンプルデータを読み込みました！');
     setTimeout(() => setAiStatusMsg(''), 4000);
@@ -277,6 +297,7 @@ export default function TeamVaultView({
           fileName: file.name,
         });
         setVenueDocs(list);
+        onVaultChanged?.();
         setAiStatusMsg(`✅ 「${savedItem.title}」をAI解析し、元のファイルと一緒に保存しました！`);
       } else if (subTab === 'fitness') {
         const extracted = Array.isArray(parsed?.records) ? parsed.records : [];
@@ -305,6 +326,7 @@ export default function TeamVaultView({
           }
         }
         setFitnessRecords(latestList);
+        onVaultChanged?.();
         setAiStatusMsg(`✅ 体力測定の記録（${extracted.length}件）をAI抽出し、成長記録に追加しました！`);
       } else {
         const { list, savedItem } = upsertCoachNote({
@@ -323,6 +345,7 @@ export default function TeamVaultView({
           fileName: file.name,
         });
         setCoachNotes(list);
+        onVaultChanged?.();
         setAiStatusMsg(`✅ コーチ助言「${savedItem.title}」をAI要約して保存しました！`);
       }
     } catch (err) {
@@ -372,6 +395,7 @@ export default function TeamVaultView({
           hasAttachment: false,
         });
         setVenueDocs(list);
+        onVaultChanged?.();
         setAiStatusMsg(`✅ 「${savedItem.title}」をテキストからAI解析・登録しました！`);
       } else if (pasteTargetMode === 'fitness') {
         const extracted = Array.isArray(parsed?.records) ? parsed.records : [];
@@ -393,6 +417,7 @@ export default function TeamVaultView({
           latestList = list;
         }
         setFitnessRecords(latestList);
+        onVaultChanged?.();
         setAiStatusMsg(`✅ 体力測定の記録（${extracted.length}件）をテキストからAI抽出し、登録しました！`);
       } else {
         const { list, savedItem } = upsertCoachNote({
@@ -405,6 +430,7 @@ export default function TeamVaultView({
           hasAttachment: false,
         });
         setCoachNotes(list);
+        onVaultChanged?.();
         setAiStatusMsg(`✅ コーチ助言「${savedItem.title}」をテキストからAI要約・登録しました！`);
       }
 
@@ -559,12 +585,14 @@ export default function TeamVaultView({
     }
 
     setVenueDocs(list);
+    onVaultChanged?.();
     setIsVenueModalOpen(false);
   };
 
   const handleDeleteVenue = (id, title) => {
     if (window.confirm(`「${title}」を削除してもよろしいですか？`)) {
       setVenueDocs(deleteVenueDoc(id));
+      onVaultChanged?.();
     }
   };
 
@@ -660,12 +688,14 @@ export default function TeamVaultView({
       notes: fitnessForm.notes.trim(),
     });
     setFitnessRecords(list);
+    onVaultChanged?.();
     setIsFitnessModalOpen(false);
   };
 
   const handleDeleteFitness = (id, label) => {
     if (window.confirm(`「${label}」の記録を削除してもよろしいですか？`)) {
       setFitnessRecords(deleteFitnessRecord(id));
+      onVaultChanged?.();
     }
   };
 
@@ -733,12 +763,91 @@ export default function TeamVaultView({
       links,
     });
     setCoachNotes(list);
+    onVaultChanged?.();
     setIsCoachModalOpen(false);
   };
 
   const handleDeleteCoachNote = (id, title) => {
     if (window.confirm(`「${title}」を削除してもよろしいですか？`)) {
       setCoachNotes(deleteCoachNote(id));
+      onVaultChanged?.();
+    }
+  };
+
+  // ==================== 4. 家族LINE共有ハンドラ ====================
+  const handleSendAllToLine = async () => {
+    setIsGeneratingShortUrl(true);
+    try {
+      const shortUrl = await getShortFamilyShareUrl(null, shareOptions);
+      const targetUrl = shortUrl || generateFamilyShareUrl(null, shareOptions);
+      if (!targetUrl) return;
+
+      const parts = [];
+      if (shareOptions.includeSchedules) parts.push('試合日程');
+      if (shareOptions.includeVenue && venueDocs.length > 0) parts.push(`会場ルール${venueDocs.length}件`);
+      if (shareOptions.includeFitness && fitnessRecords.length > 0) parts.push(`体力測定${fitnessRecords.length}件`);
+      if (shareOptions.includeCoach && coachNotes.length > 0) parts.push(`コーチ助言${coachNotes.length}件`);
+      const summaryText = parts.join('・') || 'チームノート';
+
+      const lineUrl = createLineShareUrl(targetUrl, summaryText);
+      window.location.href = lineUrl;
+    } catch (e) {
+      console.warn('Failed to share to line:', e);
+    } finally {
+      setIsGeneratingShortUrl(false);
+    }
+  };
+
+  const handleCopyAllShareLink = async () => {
+    setIsGeneratingShortUrl(true);
+    try {
+      const shortUrl = await getShortFamilyShareUrl(null, shareOptions);
+      const targetUrl = shortUrl || generateFamilyShareUrl(null, shareOptions);
+      if (!targetUrl) return;
+      await navigator.clipboard.writeText(targetUrl);
+      setShareCopyFeedback(true);
+      setTimeout(() => setShareCopyFeedback(false), 3000);
+    } catch (_) {
+    } finally {
+      setIsGeneratingShortUrl(false);
+    }
+  };
+
+  const handleShareSingleVenue = (doc) => {
+    const cautions = (doc.cautions || []).map((c) => `・${c}`).join('\n');
+    const msg = `🏟️【会場・駐車場案内】${doc.title || doc.venueName}\n会場名：${doc.venueName || '未設定'}\n\n■ 🅿️ 駐車場ルール\n${doc.parkingRules || '特になし'}\n\n■ ⚠️ 注意事項\n${cautions || '特になし'}`;
+    const enc = encodeURIComponent(msg);
+    const isMobile = typeof navigator !== 'undefined' && /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+    if (isMobile) {
+      window.location.href = `line://msg/text/${enc}`;
+    } else {
+      window.open(`https://line.me/R/share?text=${enc}`, '_blank');
+    }
+  };
+
+  const handleShareSingleFitness = (rec) => {
+    const pbText = rec.isPersonalBest ? ' 🏆自己ベスト更新！' : '';
+    const diffText = rec.diffFromPrev ? ` (前回比: ${rec.diffFromPrev > 0 ? `+${rec.diffFromPrev}` : rec.diffFromPrev}${rec.unit})` : '';
+    const msg = `⚡【体力測定記録】${rec.eventName}\n測定日：${rec.dateIso}\n記録：${rec.value}${rec.unit}${pbText}${diffText}\nメモ：${rec.notes || 'なし'}`;
+    const enc = encodeURIComponent(msg);
+    const isMobile = typeof navigator !== 'undefined' && /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+    if (isMobile) {
+      window.location.href = `line://msg/text/${enc}`;
+    } else {
+      window.open(`https://line.me/R/share?text=${enc}`, '_blank');
+    }
+  };
+
+  const handleShareSingleCoach = (note) => {
+    const actions = (note.actionItems || []).map((a) => `・${a}`).join('\n');
+    const linkText = note.links?.[0]?.url ? `\n🔗 参考URL: ${note.links[0].url}` : '';
+    const msg = `💬【コーチ助言】${note.title}\n日付：${note.dateIso} (${note.category})\n\n■ 指導内容\n${note.content || 'なし'}\n\n■ 🎯 意識するアクション\n${actions || 'なし'}${linkText}`;
+    const enc = encodeURIComponent(msg);
+    const isMobile = typeof navigator !== 'undefined' && /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+    if (isMobile) {
+      window.location.href = `line://msg/text/${enc}`;
+    } else {
+      window.open(`https://line.me/R/share?text=${enc}`, '_blank');
     }
   };
 
@@ -757,7 +866,15 @@ export default function TeamVaultView({
             </p>
           </div>
 
-          <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <button
+              type="button"
+              onClick={() => setIsFamilyShareModalOpen(true)}
+              className="text-xs font-black text-white bg-[#06C755] hover:bg-[#05b34c] px-3.5 py-2 rounded-xl flex items-center gap-1.5 shadow-sm transition active:scale-95"
+            >
+              <Share2 className="w-3.5 h-3.5" />
+              <span>👨‍👩‍👦 家族にLINE共有</span>
+            </button>
             <button
               type="button"
               onClick={handleLoadSamples}
@@ -1074,6 +1191,14 @@ export default function TeamVaultView({
                     )}
 
                     <div className="flex flex-wrap items-center justify-end gap-2 pt-1 border-t border-slate-100">
+                      <button
+                        type="button"
+                        onClick={() => handleShareSingleVenue(doc)}
+                        className="text-xs font-bold text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 px-3 py-2 rounded-xl flex items-center gap-1.5 transition active:scale-95"
+                      >
+                        <Share2 className="w-3.5 h-3.5 text-emerald-600" />
+                        <span>LINEで送る</span>
+                      </button>
                       {doc.hasAttachment && (
                         <button
                           type="button"
@@ -1255,6 +1380,14 @@ export default function TeamVaultView({
                     <div className="flex items-center gap-1">
                       <button
                         type="button"
+                        onClick={() => handleShareSingleFitness(rec)}
+                        className="p-1.5 text-slate-400 hover:text-emerald-600 rounded-lg transition"
+                        title="LINEで送る"
+                      >
+                        <Share2 className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        type="button"
                         onClick={() => handleOpenFitnessModal(rec)}
                         className="p-1.5 text-slate-400 hover:text-slate-700 rounded-lg"
                       >
@@ -1417,18 +1550,18 @@ export default function TeamVaultView({
                   </div>
                 )}
 
-                {((note.links && note.links.length > 0) || note.hasAttachment) && (
-                  <div className="flex flex-wrap items-center gap-2 pt-1">
+                <div className="flex flex-wrap items-center justify-between gap-2 pt-1 border-t border-slate-100">
+                  <div className="flex flex-wrap items-center gap-2">
                     {note.links?.map((lk, idx) => (
                       <a
                         key={idx}
                         href={lk.url}
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="text-xs font-black text-sky-800 bg-sky-50 hover:bg-sky-100 border border-sky-200 px-3 py-2 rounded-xl inline-flex items-center gap-1.5 transition"
+                        className="text-xs font-black text-sky-800 bg-sky-50 hover:bg-sky-100 border border-sky-200 px-3 py-1.5 rounded-xl inline-flex items-center gap-1.5 transition"
                       >
                         <LinkIcon className="w-3.5 h-3.5 text-sky-600" />
-                        <span>{lk.title || '参考リンクを開く'}</span>
+                        <span>{lk.title || '参考リンク'}</span>
                         <ExternalLink className="w-3 h-3" />
                       </a>
                     ))}
@@ -1436,14 +1569,22 @@ export default function TeamVaultView({
                       <button
                         type="button"
                         onClick={() => handleOpenAttachment(note.id, note.title)}
-                        className="text-xs font-extrabold text-slate-700 bg-slate-100 hover:bg-slate-200 px-3 py-2 rounded-xl inline-flex items-center gap-1.5 transition"
+                        className="text-xs font-extrabold text-slate-700 bg-slate-100 hover:bg-slate-200 px-3 py-1.5 rounded-xl inline-flex items-center gap-1.5 transition"
                       >
                         <Eye className="w-3.5 h-3.5" />
-                        <span>📄 元のプリント/画像を開く</span>
+                        <span>📄 元のプリント/画像</span>
                       </button>
                     )}
                   </div>
-                )}
+                  <button
+                    type="button"
+                    onClick={() => handleShareSingleCoach(note)}
+                    className="text-xs font-bold text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 px-3 py-1.5 rounded-xl inline-flex items-center gap-1.5 transition active:scale-95 ml-auto"
+                  >
+                    <Share2 className="w-3.5 h-3.5 text-emerald-600" />
+                    <span>LINEで送る</span>
+                  </button>
+                </div>
               </div>
             ))}
           </div>
@@ -2071,6 +2212,109 @@ export default function TeamVaultView({
                   )}
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ==================== 👨‍👩‍👦 家族一括LINE共有モーダル ==================== */}
+      {isFamilyShareModalOpen && (
+        <div className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl max-w-sm w-full p-5 shadow-2xl border border-slate-200 space-y-4">
+            <div className="flex items-center justify-between">
+              <h3 className="text-base font-black text-slate-900 flex items-center gap-2">
+                <span>👨‍👩‍👦 家族にまとめて共有</span>
+              </h3>
+              <button
+                type="button"
+                onClick={() => setIsFamilyShareModalOpen(false)}
+                className="w-7 h-7 rounded-lg hover:bg-slate-100 flex items-center justify-center text-slate-500"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-3 space-y-1">
+              <div className="text-xs font-black text-emerald-950 flex items-center gap-1.5">
+                <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                <span>1本の短縮URLで家族に一発同期</span>
+              </div>
+              <p className="text-[11px] font-bold text-emerald-800 leading-relaxed">
+                共有したいデータを選択してLINEで送ると、相手がリンクを開くだけでカレンダーとチームノートに一括取り込まれます。
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-xs font-black text-slate-700 block">共有に含めるデータ</label>
+              <div className="space-y-1.5 bg-slate-50 p-2.5 rounded-2xl border border-slate-200">
+                <label className="flex items-center gap-2.5 p-1.5 rounded-xl hover:bg-white cursor-pointer transition">
+                  <input
+                    type="checkbox"
+                    checked={shareOptions.includeSchedules}
+                    onChange={(e) => setShareOptions({ ...shareOptions, includeSchedules: e.target.checked })}
+                    className="w-4 h-4 rounded text-emerald-600 focus:ring-emerald-500"
+                  />
+                  <span className="text-xs font-extrabold text-slate-800">📅 試合日程（直近〜未来の予定）</span>
+                </label>
+                <label className="flex items-center gap-2.5 p-1.5 rounded-xl hover:bg-white cursor-pointer transition">
+                  <input
+                    type="checkbox"
+                    checked={shareOptions.includeVenue}
+                    onChange={(e) => setShareOptions({ ...shareOptions, includeVenue: e.target.checked })}
+                    className="w-4 h-4 rounded text-emerald-600 focus:ring-emerald-500"
+                  />
+                  <span className="text-xs font-extrabold text-slate-800">🏟️ 会場・駐車場ルール ({venueDocs.length}件)</span>
+                </label>
+                <label className="flex items-center gap-2.5 p-1.5 rounded-xl hover:bg-white cursor-pointer transition">
+                  <input
+                    type="checkbox"
+                    checked={shareOptions.includeFitness}
+                    onChange={(e) => setShareOptions({ ...shareOptions, includeFitness: e.target.checked })}
+                    className="w-4 h-4 rounded text-emerald-600 focus:ring-emerald-500"
+                  />
+                  <span className="text-xs font-extrabold text-slate-800">⚡ 体力測定記録 ({fitnessRecords.length}件)</span>
+                </label>
+                <label className="flex items-center gap-2.5 p-1.5 rounded-xl hover:bg-white cursor-pointer transition">
+                  <input
+                    type="checkbox"
+                    checked={shareOptions.includeCoach}
+                    onChange={(e) => setShareOptions({ ...shareOptions, includeCoach: e.target.checked })}
+                    className="w-4 h-4 rounded text-emerald-600 focus:ring-emerald-500"
+                  />
+                  <span className="text-xs font-extrabold text-slate-800">💬 コーチ助言・リンク ({coachNotes.length}件)</span>
+                </label>
+              </div>
+            </div>
+
+            <div className="space-y-2 pt-1">
+              <button
+                type="button"
+                onClick={handleSendAllToLine}
+                disabled={isGeneratingShortUrl || (!shareOptions.includeSchedules && !shareOptions.includeVenue && !shareOptions.includeFitness && !shareOptions.includeCoach)}
+                className="w-full bg-[#06C755] hover:bg-[#05b34c] active:scale-95 text-white font-black py-3.5 px-4 rounded-xl shadow-md flex items-center justify-center gap-2 transition text-xs disabled:opacity-60"
+              >
+                {isGeneratingShortUrl ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span>短縮リンクを準備中...</span>
+                  </>
+                ) : (
+                  <>
+                    <Share2 className="w-4 h-4" />
+                    <span>LINEで家族に送る</span>
+                  </>
+                )}
+              </button>
+
+              <button
+                type="button"
+                onClick={handleCopyAllShareLink}
+                disabled={isGeneratingShortUrl}
+                className="w-full bg-slate-100 hover:bg-slate-200 active:scale-95 text-slate-800 font-extrabold py-3 px-4 rounded-xl border border-slate-200 flex items-center justify-center gap-2 transition text-xs"
+              >
+                <Copy className="w-4 h-4" />
+                <span>{shareCopyFeedback ? '✓ 共有リンクをコピーしました！' : '共有リンクをコピー'}</span>
+              </button>
             </div>
           </div>
         </div>

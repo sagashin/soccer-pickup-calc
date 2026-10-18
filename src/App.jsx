@@ -37,7 +37,12 @@ import ScheduleCalendarView from './ScheduleCalendarView';
 import MatchWeatherChecklist from './MatchWeatherChecklist';
 import GoogleMapsKeyModal from './GoogleMapsKeyModal';
 import TeamVaultView from './TeamVaultView';
-import { findMatchingVenueDocs } from './teamVaultStore';
+import {
+  findMatchingVenueDocs,
+  mergeImportedVenueDocs,
+  mergeImportedFitnessRecords,
+  mergeImportedCoachNotes,
+} from './teamVaultStore';
 import {
   parseFamilyShareUrl,
   mergeImportedEvents,
@@ -502,17 +507,60 @@ export default function App() {
   // スケジュール画像インポーターのモーダル展開ステート
   const [isScheduleImporterOpen, setIsScheduleImporterOpen] = useState(false);
   const [scheduleRefreshKey, setScheduleRefreshKey] = useState(0);
+  const [vaultRefreshKey, setVaultRefreshKey] = useState(0);
   // 家族共有リンクから受信した際のお祝いトースト
   const [familySyncToast, setFamilySyncToast] = useState('');
 
   // 家族共有リンク (?sync=... または #sync=...) の自動同期受信チェック
   useEffect(() => {
-    const sharedEvents = parseFamilyShareUrl();
-    if (sharedEvents && sharedEvents.length > 0) {
-      const result = mergeImportedEvents(sharedEvents);
-      setFamilySyncToast(`👨‍👩‍👦 家族から共有された試合日程（${sharedEvents.length}件）を取り込みました！`);
+    const sharedData = parseFamilyShareUrl();
+    if (!sharedData) return;
+
+    const syncToastParts = [];
+    let shouldOpenSchedule = false;
+    let shouldOpenVault = false;
+
+    // 【旧形式】デコード結果が配列の場合（試合日程）
+    if (Array.isArray(sharedData)) {
+      if (sharedData.length > 0) {
+        mergeImportedEvents(sharedData);
+        syncToastParts.push(`日程${sharedData.length}件`);
+        shouldOpenSchedule = true;
+      }
+    } else if (typeof sharedData === 'object') {
+      // 【新v2形式】デコード結果がオブジェクトの場合
+      if (Array.isArray(sharedData.schedules) && sharedData.schedules.length > 0) {
+        mergeImportedEvents(sharedData.schedules);
+        syncToastParts.push(`日程${sharedData.schedules.length}件`);
+        shouldOpenSchedule = true;
+      }
+      if (Array.isArray(sharedData.venueDocs) && sharedData.venueDocs.length > 0) {
+        mergeImportedVenueDocs(sharedData.venueDocs);
+        syncToastParts.push(`会場ルール${sharedData.venueDocs.length}件`);
+        shouldOpenVault = true;
+      }
+      if (Array.isArray(sharedData.fitnessRecords) && sharedData.fitnessRecords.length > 0) {
+        mergeImportedFitnessRecords(sharedData.fitnessRecords);
+        syncToastParts.push(`体力測定${sharedData.fitnessRecords.length}件`);
+        shouldOpenVault = true;
+      }
+      if (Array.isArray(sharedData.coachNotes) && sharedData.coachNotes.length > 0) {
+        mergeImportedCoachNotes(sharedData.coachNotes);
+        syncToastParts.push(`コーチ助言${sharedData.coachNotes.length}件`);
+        shouldOpenVault = true;
+      }
+    }
+
+    if (syncToastParts.length > 0) {
+      setFamilySyncToast(`👨‍👩‍👦 家族共有データを取り込みました！（${syncToastParts.join('・')}）`);
       setScheduleRefreshKey((k) => k + 1);
-      setActiveTab('schedule');
+      setVaultRefreshKey((k) => k + 1);
+
+      if (shouldOpenSchedule) {
+        setActiveTab('schedule');
+      } else if (shouldOpenVault) {
+        setActiveTab('vault');
+      }
 
       // URLのハッシュやクエリをクリーンアップ
       try {
@@ -885,7 +933,7 @@ export default function App() {
   // 現在の目的地に一致するチーム登録の会場・駐車場ルール
   const matchedVenueDocs = useMemo(
     () => findMatchingVenueDocs(destination),
-    [destination, activeTab]
+    [destination, activeTab, vaultRefreshKey]
   );
 
   const handleSelectPreset = (preset) => {
@@ -2650,6 +2698,7 @@ export default function App() {
                   calculateRoute(origin, venueName);
                 }}
                 highlightVenueName={destination}
+                onVaultChanged={() => setVaultRefreshKey((k) => k + 1)}
               />
             </div>
           )}

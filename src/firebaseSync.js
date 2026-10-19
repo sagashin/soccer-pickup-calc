@@ -130,6 +130,13 @@ export function parseFamilyInviteUrl() {
 let unsubscribeSnapshot = null;
 let isPushingLocalChange = false;
 
+function withTimeout(promise, ms = 7000, errorMsg = '通信がタイムアウトしました（Firestoreデータベースがまだ作成されていない可能性があります）。') {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error(errorMsg)), ms)),
+  ]);
+}
+
 /**
  * クラウド（Firestore）へ現在のローカル全データをアップロード同期
  */
@@ -145,17 +152,21 @@ export async function pushAllToCloud(familyIdParam = null) {
     const coachNotes = getCoachNotes();
 
     const familyDocRef = doc(db, 'families', familyId);
-    await setDoc(
-      familyDocRef,
-      {
-        schedules: schedules.slice(0, 80),
-        venueDocs: venueDocs.slice(0, 30),
-        fitnessRecords: fitnessRecords.slice(0, 50),
-        coachNotes: coachNotes.slice(0, 30),
-        updatedAt: Date.now(),
-        lastUpdatedBy: getSavedDeviceName(),
-      },
-      { merge: true }
+    await withTimeout(
+      setDoc(
+        familyDocRef,
+        {
+          schedules: schedules.slice(0, 80),
+          venueDocs: venueDocs.slice(0, 30),
+          fitnessRecords: fitnessRecords.slice(0, 50),
+          coachNotes: coachNotes.slice(0, 30),
+          updatedAt: Date.now(),
+          lastUpdatedBy: getSavedDeviceName(),
+        },
+        { merge: true }
+      ),
+      7000,
+      'クラウド保存がタイムアウトしました。Firestoreデータベースが作成されているかご確認ください。'
     );
 
     return { success: true };
@@ -179,7 +190,11 @@ export async function pullFromCloud(familyIdParam = null) {
 
   try {
     const familyDocRef = doc(db, 'families', familyId);
-    const snap = await getDoc(familyDocRef);
+    const snap = await withTimeout(
+      getDoc(familyDocRef),
+      7000,
+      'クラウド取得がタイムアウトしました。Firestoreデータベースが作成されているかご確認ください。'
+    );
     if (!snap.exists()) {
       // まだクラウド上にデータがない場合は、現在のローカルデータを初プッシュ
       await pushAllToCloud(familyId);

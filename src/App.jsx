@@ -1409,9 +1409,12 @@ export default function App() {
     <div className="min-h-screen bg-slate-100 flex flex-col items-center justify-start pb-12">
       {/* スマホ幅コンテナ */}
       <div className="w-full max-w-md bg-slate-50 min-h-screen shadow-xl flex flex-col">
-        {/* スリムヘッダー (下部ボトムナビへの一本化により上部空間をスッキリ確保) */}
+        {/* スリムヘッダー (スマホのノッチ・カメラ・Dynamic Island・ステータスバーを確実に回避するセーフエリア対応) */}
         <header
-          className={`text-white px-4 py-3.5 shadow-md sticky top-0 z-30 transition-colors duration-300 ${
+          style={{
+            paddingTop: 'calc(env(safe-area-inset-top, 0px) + 12px)',
+          }}
+          className={`text-white px-4 pb-3.5 shadow-md sticky top-0 z-30 transition-colors duration-300 ${
             isTrainMode
               ? 'bg-gradient-to-r from-indigo-800 to-indigo-600'
               : 'bg-gradient-to-r from-emerald-700 to-emerald-600'
@@ -1476,7 +1479,12 @@ export default function App() {
           </div>
         </header>
 
-        <main className="flex-1 px-4 py-3.5 space-y-3.5 pb-28">
+        <main
+          style={{
+            paddingBottom: 'calc(env(safe-area-inset-bottom, 0px) + 6.5rem)',
+          }}
+          className="flex-1 px-4 py-3.5 space-y-3.5"
+        >
           {/* 👨‍👩‍👦 家族同期受信トーストバナー */}
           {familySyncToast && (
             <div className="bg-gradient-to-r from-emerald-600 to-teal-600 text-white rounded-2xl p-4 shadow-lg flex items-center justify-between gap-3 border border-emerald-400">
@@ -2828,8 +2836,13 @@ export default function App() {
           </footer>
         </main>
 
-        {/* 📱 スマホ・PC共通 固定ボトムナビゲーションバー（5タブ・バッジ表示対応） */}
-        <div className="fixed bottom-0 left-0 right-0 z-40 bg-white/95 backdrop-blur-md border-t border-slate-200/90 py-1.5 px-1.5 grid grid-cols-5 gap-1 max-w-md mx-auto shadow-2xl">
+        {/* 📱 スマホ・PC共通 固定ボトムナビゲーションバー（セーフエリア・ホームバー対応） */}
+        <div
+          style={{
+            paddingBottom: 'calc(env(safe-area-inset-bottom, 0px) + 6px)',
+          }}
+          className="fixed bottom-0 left-0 right-0 z-40 bg-white/95 backdrop-blur-md border-t border-slate-200/90 pt-1.5 px-1.5 grid grid-cols-5 gap-1 max-w-md mx-auto shadow-2xl"
+        >
           <button
             type="button"
             onClick={() => {

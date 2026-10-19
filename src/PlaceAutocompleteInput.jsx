@@ -5,32 +5,23 @@ import {
   getGooglePlacePredictions,
   getCoordsByPlaceId,
 } from './googleMapsClient';
-import { getSoccerRelevanceScore } from './geoUtils';
+import {
+  getSoccerRelevanceScore,
+  findKnownVenues,
+  isGsiMatchValid,
+} from './geoUtils';
 
 async function fetchPlaceSuggestions(query, signal) {
   const trimmed = query.trim();
   if (trimmed.length < 2) return [];
 
-  const gmapsKey = getSavedGoogleMapsApiKey();
-
-  // 1. Google Maps APIキーが設定されている場合は Google Places を最優先
-  if (gmapsKey) {
-    try {
-      const gResults = await getGooglePlacePredictions(trimmed, gmapsKey);
-      if (Array.isArray(gResults) && gResults.length > 0) {
-        return gResults.slice(0, 6);
-      }
-    } catch (e) {
-      console.warn('Google Places predictions fallback to OSM:', e);
-    }
-  }
-
-  // 2. キーがない場合、または失敗時はフリー地図（OSM + GSI）
+  // 0. ビルトイン主要サッカー会場・強豪校グラウンドのマッチング（0ms・最優先表示）
+  const knownMatches = findKnownVenues(trimmed, 3);
   const results = [];
   const seenKeys = new Set();
 
   const addCandidate = (title, subtitle, fullQuery, lat, lon, source, score = 0) => {
-    const key = `${title}|${ Math.round(lat * 1000) },${ Math.round(lon * 1000) }`;
+    const key = `${title}|${Math.round(lat * 1000)},${Math.round(lon * 1000)}`;
     if (seenKeys.has(key)) return;
     seenKeys.add(key);
     results.push({
@@ -45,28 +36,82 @@ async function fetchPlaceSuggestions(query, signal) {
     });
   };
 
-  const [nomRes, gsiRes] = await Promise.allSettled([
-    fetch(
-      `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(
-        trimmed
-      )}&countrycodes=jp&limit=8&addressdetails=1&accept-language=ja`,
-      { signal, headers: { Accept: 'application/json' } }
-    ).then((r) => (r.ok ? r.json() : [])),
+  for (const kv of knownMatches) {
+    addCandidate(
+      kv.displayName,
+      '公式グラウンド登録・高精度',
+      kv.displayName,
+      kv.lat,
+      kv.lon,
+      'builtin',
+      999
+    );
+  }
+
+  const gmapsKey = getSavedGoogleMapsApiKey();
+
+  // 1. Google Maps APIキーが設定されている場合は Google Places を最優先
+  if (gmapsKey) {
+    try {
+      const gResults = await getGooglePlacePredictions(trimmed, gmapsKey);
+      if (Array.isArray(gResults) && gResults.length > 0) {
+        // ビルトイン結果とマージして返却
+        const googleSlice = gResults.slice(0, 6 - results.length);
+        return [...results, ...googleSlice];
+      }
+    } catch (e) {
+      console.warn('Google Places predictions fallback to OSM:', e);
+    }
+  }
+
+  // 2. キーがない場合、または失敗時はフリー地図（OSM + GSI）
+  // 高校名揺らぎ（「高校」->「高等学校」）も考慮
+  const schoolVariant = trimmed.includes('高校') ? trimmed.replace(/高校/g, '高等学校') : null;
+  const nomQueries = [trimmed, schoolVariant].filter(Boolean);
+
+  const [nomResList, gsiRes] = await Promise.allSettled([
+    Promise.all(
+      nomQueries.map((q) =>
+        fetch(
+          `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(
+            q
+          )}&countrycodes=jp&limit=8&addressdetails=1&accept-language=ja`,
+          { signal, headers: { Accept: 'application/json' } }
+        ).then((r) => (r.ok ? r.json() : [])).catch(() => [])
+      )
+    ),
     fetch(
       `https://msearch.gsi.go.jp/address-search/AddressSearch?q=${encodeURIComponent(trimmed)}`,
       { signal }
-    ).then((r) => (r.ok ? r.json() : [])),
+    ).then((r) => (r.ok ? r.json() : [])).catch(() => []),
   ]);
 
   // OpenStreetMap Nominatim
-  if (nomRes.status === 'fulfilled' && Array.isArray(nomRes.value)) {
-    const sortedItems = [...nomRes.value].sort((a, b) => {
-      const scoreA = getSoccerRelevanceScore(a.name || a.display_name, a.class, a.type);
-      const scoreB = getSoccerRelevanceScore(b.name || b.display_name, b.class, b.type);
-      return scoreB - scoreA;
-    });
+  if (nomResList.status === 'fulfilled' && Array.isArray(nomResList.value)) {
+    const rawNomItems = nomResList.value.flat();
+    const coreKeyword = trimmed
+      .replace(/(高等学校|高校|中学校|学校|グラウンド|グランド|サッカー場|公園|スタジアム|第\d+)/g, '')
+      .trim();
 
-    for (const item of sortedItems) {
+    const scoredItems = rawNomItems
+      .map((item) => {
+        const title = item.name || (item.display_name || '').split(',')[0] || '';
+        let score = getSoccerRelevanceScore(title, item.class, item.type);
+        if (coreKeyword.length >= 2) {
+          const fullText = (item.display_name || '').toLowerCase();
+          if (fullText.includes(coreKeyword.toLowerCase())) {
+            score += 150;
+          } else {
+            score -= 300;
+          }
+        }
+        return { item, score };
+      })
+      .filter((x) => x.score > 0)
+      .sort((a, b) => b.score - a.score)
+      .map((x) => x.item);
+
+    for (const item of scoredItems) {
       const lat = parseFloat(item.lat);
       const lon = parseFloat(item.lon);
       const parts = (item.display_name || '').split(',').map((s) => s.trim());
@@ -86,28 +131,17 @@ async function fetchPlaceSuggestions(query, signal) {
     }
   }
 
-  // 国土地理院 AddressSearch (※北海道などの無関係な都道府県一覧を厳格にフィルタリング)
+  // 国土地理院 AddressSearch (※北海道などの無関係な住所誤爆を厳格にフィルタリング)
   if (gsiRes.status === 'fulfilled' && Array.isArray(gsiRes.value)) {
-    const coreWord = trimmed
-      .replace(/(高校|中学|学校|グラウンド|グランド|公園|運動公園|第\d+グラウンド)$/, '')
-      .trim();
-
     for (const item of gsiRes.value.slice(0, 8)) {
       const coords = item?.geometry?.coordinates;
       const title = item?.properties?.title;
 
-      // 防御チェック：タイトルにクエリの主要ワードが含まれている場合のみ追加（北海道等の都道府県リスト誤爆を防止）
-      const isRelevant =
-        coreWord.length >= 2
-          ? title?.includes(coreWord) || coreWord.includes(title || '')
-          : title?.includes(trimmed);
-
-      // 単なる「北海道」「青森県」等の都道府県名単体であれば除外
-      const isJustPrefecture = /^(北海道|.+[都府県])$/.test(title || '');
-
-      if (Array.isArray(coords) && coords.length >= 2 && title && isRelevant && !isJustPrefecture) {
-        const [lon, lat] = coords;
-        addCandidate(title, '住所・地点データ (国土地理院)', title, lat, lon, 'gsi');
+      if (Array.isArray(coords) && coords.length >= 2 && title) {
+        if (isGsiMatchValid(trimmed, title)) {
+          const [lon, lat] = coords;
+          addCandidate(title, '住所・地点データ (国土地理院)', title, lat, lon, 'gsi');
+        }
       }
     }
   }
@@ -297,6 +331,11 @@ export default function PlaceAutocompleteInput({
                   {item.subtitle}
                 </div>
               </div>
+              {item.source === 'builtin' && (
+                <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 font-extrabold shrink-0 self-center border border-emerald-300">
+                  公式会場
+                </span>
+              )}
               {item.source?.startsWith('google') && (
                 <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-50 text-blue-600 font-medium shrink-0 self-center">
                   Google

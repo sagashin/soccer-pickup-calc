@@ -28,9 +28,16 @@ if (typeof window !== 'undefined') {
  * 保存されているAPIキーを取得
  */
 export function getSavedGoogleMapsApiKey() {
-  const envKey = import.meta.env?.VITE_GOOGLE_MAPS_API_KEY || '';
-  const localKey = localStorage.getItem(GOOGLE_MAPS_API_KEY_STORAGE) || '';
-  return localKey.trim() || envKey.trim();
+  const envKey = (typeof import.meta !== 'undefined' && import.meta.env?.VITE_GOOGLE_MAPS_API_KEY) || '';
+  if (typeof window === 'undefined' || typeof localStorage === 'undefined') {
+    return envKey.trim();
+  }
+  try {
+    const localKey = localStorage.getItem(GOOGLE_MAPS_API_KEY_STORAGE) || '';
+    return localKey.trim() || envKey.trim();
+  } catch (e) {
+    return envKey.trim();
+  }
 }
 
 /**
@@ -38,7 +45,13 @@ export function getSavedGoogleMapsApiKey() {
  */
 export function saveGoogleMapsApiKey(key) {
   const trimmed = (key || '').trim();
-  localStorage.setItem(GOOGLE_MAPS_API_KEY_STORAGE, trimmed);
+  if (typeof window !== 'undefined' && typeof localStorage !== 'undefined') {
+    try {
+      localStorage.setItem(GOOGLE_MAPS_API_KEY_STORAGE, trimmed);
+    } catch (e) {
+      // ignore
+    }
+  }
   hasAuthError = false;
   scriptLoadingPromise = null;
   return trimmed;

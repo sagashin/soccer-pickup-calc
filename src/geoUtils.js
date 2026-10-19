@@ -1,4 +1,4 @@
-import { getSavedGoogleMapsApiKey, geocodeWithGoogleMaps } from './googleMapsClient';
+import { getSavedGoogleMapsApiKey, geocodeWithGoogleMaps } from './googleMapsClient.js';
 
 /**
  * 地理・ジオコーディング・キャッシュユーティリティ
@@ -6,6 +6,373 @@ import { getSavedGoogleMapsApiKey, geocodeWithGoogleMaps } from './googleMapsCli
 
 const GEOCODE_CACHE_KEY = 'soccer_pickup_geocode_cache_v1';
 const memoryCache = new Map();
+
+/**
+ * 主要なサッカー会場・強豪高校グラウンドのビルトイン座標辞書（千葉・埼玉・東京・茨城・神奈川）
+ * 外部通信不要・オフラインでも0ミリ秒で100%正確な位置を特定！
+ */
+export const KNOWN_SOCCER_VENUES = [
+  {
+    keywords: ['流通経済大学付属柏', '流経大柏', '流通経済大柏', '流経柏', '流通経済大学付属柏高校', '流通経済大学付属柏高等学校', '流経'],
+    lat: 35.9072516,
+    lon: 139.9264238,
+    displayName: '流通経済大学付属柏高等学校 グラウンド (千葉県柏市)',
+  },
+  {
+    keywords: ['日本体育大学柏', '日体大柏', '日体柏', '日体大柏高校', '日本体育大学柏高校', '日本体育大学柏高等学校'],
+    lat: 35.856544,
+    lon: 139.992188,
+    displayName: '日本体育大学柏高等学校 (千葉県柏市戸張)',
+  },
+  {
+    keywords: ['市立船橋', '市船', '市立船橋高校', '市立船橋高等学校', '市船サッカー'],
+    lat: 35.701063,
+    lon: 139.999537,
+    displayName: '市立船橋高等学校 (千葉県船橋市)',
+  },
+  {
+    keywords: ['西武台第2', '西武台高校 第2', '西武台高校第2', '西武台高校第２', '西武台第2グラウンド', '西武台第２グラウンド', '西武台高校', '西武台'],
+    lat: 35.808865,
+    lon: 139.546066,
+    displayName: '西武台高校 第2グラウンド (埼玉県新座市大和田)',
+  },
+  {
+    keywords: ['zozo park', 'zozopark', 'ゾゾパーク', 'zozopark honda', 'zozo park honda football stadium'],
+    lat: 35.647606,
+    lon: 140.04808,
+    displayName: 'ZOZOPARK HONDA FOOTBALL STADIUM (千葉県千葉市美浜区)',
+  },
+  {
+    keywords: ['ゼットエーオリプリ', 'ゼットエー', 'ゼットエーオリプリスタジアム', 'オリプリ'],
+    lat: 35.527843,
+    lon: 140.071472,
+    displayName: 'ゼットエーオリプリスタジアム (千葉県市原市)',
+  },
+  {
+    keywords: ['市原スポレクパーク', 'スポレクパーク', '市原スポレク', 'スポレク'],
+    lat: 35.538357,
+    lon: 140.133987,
+    displayName: '市原スポレクパーク (千葉県市原市菊間)',
+  },
+  {
+    keywords: ['第一カッターフィールド', '秋津サッカー場', '第一カッター', '秋津総合運動公園'],
+    lat: 35.669724,
+    lon: 140.012436,
+    displayName: '第一カッターフィールド / 秋津サッカー場 (千葉県習志野市)',
+  },
+  {
+    keywords: ['柏の葉公園総合競技場', '柏の葉競技場', '柏の葉総合競技場', '柏の葉公園'],
+    lat: 35.896393,
+    lon: 139.937592,
+    displayName: '柏の葉公園総合競技場 (千葉県柏市柏の葉)',
+  },
+  {
+    keywords: ['三協フロンテア柏スタジアム', '日立柏サッカー場', '日立柏グラウンド', '日立台'],
+    lat: 35.84972,
+    lon: 139.975021,
+    displayName: '三協フロンテア柏スタジアム (千葉県柏市日立台)',
+  },
+  {
+    keywords: ['中央学院高校', '中央学院高等学校', '中央学院'],
+    lat: 35.864315,
+    lon: 140.059662,
+    displayName: '中央学院高等学校 (千葉県我孫子市都部)',
+  },
+  {
+    keywords: ['暁星国際高校', '暁星国際高等学校', '暁星国際'],
+    lat: 35.349476,
+    lon: 139.983719,
+    displayName: '暁星国際高等学校 (千葉県木更津市矢那)',
+  },
+  {
+    keywords: ['八千代松陰高校', '八千代松陰中学校・高等学校', '八千代松陰高等学校', '八千代松陰'],
+    lat: 35.741547,
+    lon: 140.12442,
+    displayName: '八千代松陰高等学校 (千葉県八千代市村上)',
+  },
+  {
+    keywords: ['習志野高校', '習志野市立習志野高校', '習志野市立習志野高等学校', '習志野市立習志野'],
+    lat: 35.694313,
+    lon: 140.064148,
+    displayName: '習志野市立習志野高等学校 (千葉県習志野市東習志野)',
+  },
+  {
+    keywords: ['八千代高校', '千葉県立八千代高校', '千葉県立八千代高等学校'],
+    lat: 35.722828,
+    lon: 140.106049,
+    displayName: '千葉県立八千代高等学校 (千葉県八千代市萱田町)',
+  },
+  {
+    keywords: ['専修大学松戸高校', '専大松戸高校', '専修大学松戸高等学校', '専修大松戸', '専大松戸'],
+    lat: 35.798832,
+    lon: 139.920105,
+    displayName: '専修大学松戸高等学校 (千葉県松戸市上本郷)',
+  },
+  {
+    keywords: ['昌平高校', '昌平高等学校', '昌平'],
+    lat: 36.057735,
+    lon: 139.70134,
+    displayName: '昌平高等学校 (埼玉県杉戸町下野)',
+  },
+  {
+    keywords: ['武南高校', '武南高等学校', '武南'],
+    lat: 35.823086,
+    lon: 139.704941,
+    displayName: '武南高等学校 (埼玉県蕨市塚越)',
+  },
+  {
+    keywords: ['浦和東高校', '浦和東高等学校', '浦和東'],
+    lat: 35.906208,
+    lon: 139.708603,
+    displayName: '浦和東高等学校 (埼玉県さいたま市緑区寺山)',
+  },
+  {
+    keywords: ['成立学園鷲宮グランド', '成立学園', '成立学園鷲宮', '成立鷲宮', '鷲宮グランド'],
+    lat: 36.096821,
+    lon: 139.698669,
+    displayName: '成立学園鷲宮グラウンド (埼玉県久喜市八甫)',
+  },
+  {
+    keywords: ['帝京高校', '帝京高等学校', '帝京高校グラウンド', '帝京'],
+    lat: 35.753227,
+    lon: 139.716522,
+    displayName: '帝京高等学校 (東京都板橋区加賀)',
+  },
+  {
+    keywords: ['幕張総合高校', '幕張総合', '幕張総合高等学校', '幕総', '県立幕張総合高校', '千葉県立幕張総合高等学校'],
+    lat: 35.6517,
+    lon: 140.0435,
+    displayName: '千葉県立幕張総合高等学校 (千葉県千葉市美浜区若葉)',
+  },
+  {
+    keywords: ['敬愛学園高校', '敬愛学園', '敬愛学園高等学校'],
+    lat: 35.6322,
+    lon: 140.1066,
+    displayName: '敬愛学園高等学校 (千葉県千葉市稲毛区)',
+  },
+  {
+    keywords: ['千葉明徳高校', '千葉明徳', '千葉明徳高等学校'],
+    lat: 35.5675,
+    lon: 140.1581,
+    displayName: '千葉明徳高等学校 (千葉県千葉市中央区)',
+  },
+  {
+    keywords: ['翔凜高校', '翔凜', '翔凜高等学校'],
+    lat: 35.2952,
+    lon: 139.9234,
+    displayName: '翔凜高等学校 (千葉県君津市)',
+  },
+  {
+    keywords: ['東京学館浦安高校', '東京学館浦安高等学校', '学館浦安'],
+    lat: 35.6433,
+    lon: 139.8972,
+    displayName: '東京学館浦安高等学校 (千葉県浦安市日の出)',
+  },
+  {
+    keywords: ['八千代東高校', '八千代東高等学校', '八千代東'],
+    lat: 35.7337,
+    lon: 140.1192,
+    displayName: '千葉県立八千代東高等学校 (千葉県八千代市)',
+  },
+  {
+    keywords: ['白井高校', '白井高等学校'],
+    lat: 35.7891,
+    lon: 140.0527,
+    displayName: '千葉県立白井高等学校 (千葉県白井市)',
+  },
+  {
+    keywords: ['高円宮記念jfa夢フィールド', 'jfa夢フィールド', '夢フィールド'],
+    lat: 35.639843,
+    lon: 140.036606,
+    displayName: '高円宮記念JFA夢フィールド (千葉県千葉市美浜区美浜)',
+  },
+  {
+    keywords: ['フクダ電子アリーナ', 'フクアリ', 'フクダ電子フィールド', 'フクダ電子スクエア'],
+    lat: 35.574673,
+    lon: 140.12413,
+    displayName: 'フクダ電子アリーナ / フィールド (千葉県千葉市中央区川崎町)',
+  },
+  {
+    keywords: ['重兵衛スポーツフィールド中台', '中台運動公園', '中台球技場'],
+    lat: 35.780045,
+    lon: 140.305557,
+    displayName: '重兵衛スポーツフィールド中台 (千葉県成田市中台)',
+  },
+  {
+    keywords: ['東総運動公園', '東総運動場'],
+    lat: 35.711559,
+    lon: 140.65123,
+    displayName: '東総運動公園 (千葉県旭市ハ)',
+  },
+  {
+    keywords: ['市原緑地運動公園', '市原緑地運動公園臨海競技場', '市原臨海競技場'],
+    lat: 35.527843,
+    lon: 140.071472,
+    displayName: '市原緑地運動公園臨海競技場 (千葉県市原市岩崎)',
+  },
+  {
+    keywords: ['姉崎公園サッカー場', '姉崎サッカー場', '姉崎公園'],
+    lat: 35.489086,
+    lon: 140.043304,
+    displayName: '姉崎公園サッカー場 (千葉県市原市姉崎海岸)',
+  },
+  {
+    keywords: ['つくばfc', 'つくばtフィールド', 't-field', 'つくばfc t-field'],
+    lat: 36.06944,
+    lon: 140.11389,
+    displayName: 'つくばFC T-Field (茨城県つくば市)',
+  },
+  {
+    keywords: ['ひたちなか総合', 'ひたちなか市総合運動公園'],
+    lat: 36.38611,
+    lon: 140.57778,
+    displayName: 'ひたちなか市総合運動公園 (茨城県ひたちなか市)',
+  },
+  {
+    keywords: ['羽生中央公園', '羽生市中央公園'],
+    lat: 36.17222,
+    lon: 139.54444,
+    displayName: '羽生市中央公園 (埼玉県羽生市)',
+  },
+  {
+    keywords: ['j-foot浦和美園', '浦和美園', 'ジェイフット'],
+    lat: 35.90556,
+    lon: 139.73056,
+    displayName: 'J-foot浦和美園 (埼玉県さいたま市緑区)',
+  },
+  {
+    keywords: ['八千代市総合運動公園', '八千代総合運動公園'],
+    lat: 35.73361,
+    lon: 140.10639,
+    displayName: '八千代市総合運動公園 (千葉県八千代市)',
+  },
+  {
+    keywords: ['埼玉スタジアム2002', '埼玉スタジアム', '埼スタ', '埼玉スタジアム第2', '埼玉スタジアム第3', '埼玉スタジアム第4'],
+    lat: 35.903,
+    lon: 139.7175,
+    displayName: '埼玉スタジアム2002 第2/第3/第4グラウンド (埼玉県さいたま市緑区)',
+  },
+];
+
+/**
+ * 入力文字列に対応するビルトイン会場を検索（単一）
+ */
+export function findKnownVenue(query) {
+  if (!query || typeof query !== 'string') return null;
+  const q = query.trim().toLowerCase().replace(/[\s\u3000]+/g, '');
+  if (q.length < 2) return null;
+
+  for (const venue of KNOWN_SOCCER_VENUES) {
+    for (const kw of venue.keywords) {
+      const cleanKw = kw.toLowerCase().replace(/[\s\u3000]+/g, '');
+      if (cleanKw.length <= 2) {
+        if (q.includes(cleanKw)) {
+          return {
+            lat: venue.lat,
+            lon: venue.lon,
+            displayName: venue.displayName,
+            candidates: [],
+            source: 'builtin',
+          };
+        }
+      } else {
+        if (q.includes(cleanKw) || cleanKw.includes(q)) {
+          return {
+            lat: venue.lat,
+            lon: venue.lon,
+            displayName: venue.displayName,
+            candidates: [],
+            source: 'builtin',
+          };
+        }
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * オートコンプリート用: 入力文字列にマッチするビルトイン会場を複数検索
+ */
+export function findKnownVenues(query, limit = 4) {
+  if (!query || typeof query !== 'string') return [];
+  const q = query.trim().toLowerCase().replace(/[\s\u3000]+/g, '');
+  if (q.length < 2) return [];
+
+  const matched = [];
+  const seenNames = new Set();
+
+  for (const venue of KNOWN_SOCCER_VENUES) {
+    if (seenNames.has(venue.displayName)) continue;
+    let isHit = false;
+
+    for (const kw of venue.keywords) {
+      const cleanKw = kw.toLowerCase().replace(/[\s\u3000]+/g, '');
+      if (cleanKw.length <= 2) {
+        if (q.includes(cleanKw) || cleanKw.includes(q)) {
+          isHit = true;
+          break;
+        }
+      } else {
+        if (q.includes(cleanKw) || cleanKw.includes(q)) {
+          isHit = true;
+          break;
+        }
+      }
+    }
+
+    if (isHit) {
+      seenNames.add(venue.displayName);
+      matched.push({
+        lat: venue.lat,
+        lon: venue.lon,
+        displayName: venue.displayName,
+        candidates: [],
+        source: 'builtin',
+      });
+      if (matched.length >= limit) break;
+    }
+  }
+  return matched;
+}
+
+/**
+ * 国土地理院（GSI）の検索結果がクエリと妥当に一致しているか厳格チェック
+ * ※「流通経済大学付属柏高校」に対して「北海道千歳市流通」がヒットするような
+ *   前方2文字の誤爆住所を完全に遮断
+ */
+export function isGsiMatchValid(query, title) {
+  if (!query || !title) return false;
+  const q = query.trim();
+  const t = title.trim();
+
+  // 単なる「北海道」「青森県」等の都道府県単体は除外
+  if (/^(北海道|.+[都府県])$/.test(t)) return false;
+
+  // 都道府県名を除いた市区町村・町域部分
+  const localPart = t.replace(/^(北海道|.+?[都府県])/, '');
+  if (!localPart || localPart.length < 2) return false;
+
+  // 1. クエリが市区町村・町域を含んでいるか、または住所がクエリを含んでいるか
+  if (q.includes(localPart)) return true;
+  if (t.includes(q)) return true;
+
+  // 2. 市区町村名単位でチェック（例: "柏市", "船橋市", "千歳市"）
+  const cityMatch = t.match(/^(?:北海道|.+?[都府県])?([^0-9\s]+?[市区町村])/);
+  if (cityMatch && cityMatch[1] && cityMatch[1].length >= 2) {
+    const city = cityMatch[1];
+    // クエリにその市区町村名が含まれていればOK
+    if (q.includes(city)) return true;
+  }
+
+  // 3. クエリが施設名（高校、大学、グラウンドなど）の場合、市区町村すら一致しなければ除外
+  const isFacilityName = /(高校|高等学校|大学|中学|学園|グラウンド|グランド|サッカー|公園|スタジアム|アリーナ|fc)/i.test(q);
+  if (isFacilityName) {
+    return false;
+  }
+
+  return false;
+}
 
 /**
  * サッカー施設・学校グラウンドの優先度スコアリング
@@ -203,10 +570,17 @@ export async function geocodeAddress(address, options = {}) {
   }
 
   // カッコや補足のクレンジング
-  // 例: "つくばFC T-Field (茨城県つくば市)" -> cleanName: "つくばFC T-Field", parenText: "茨城県つくば市"
+  // 例: "つくばFC T-Field (茨城県つくば市)" -> cleanName: "つくばFC T-Field"
   let cleanName = trimmed.replace(/[\(（][^()（）]+[\)）]/g, '').trim();
-  cleanName = cleanName.replace(/(第\d+コート|A面|B面|C面|人工芝|天然芝|グラウンド|グランド)$/i, '').trim();
+  cleanName = cleanName.replace(/(第\d+コート|A面|B面|C面|人工芝|天然芝|第\d+グラウンド|グラウンド|グランド|サッカー場|球技場)$/i, '').trim();
   const extractedMuni = extractMunicipality(trimmed);
+
+  // 0-a. 主要サッカー施設・強豪校グラウンドのビルトイン辞書マッチング（外部通信不要・オフラインでも0msで超高精度）
+  const knownVenue = findKnownVenue(trimmed) || (cleanName ? findKnownVenue(cleanName) : null);
+  if (knownVenue) {
+    saveCachedCoords(trimmed, knownVenue);
+    return knownVenue;
+  }
 
   // 1. Google Maps APIキーが設定されている場合は Google Maps を最優先実行！
   const gmapsKey = getSavedGoogleMapsApiKey();
@@ -233,8 +607,7 @@ export async function geocodeAddress(address, options = {}) {
         if (Array.isArray(gsiData) && gsiData.length > 0) {
           const validItems = gsiData.filter((item) => {
             const title = item?.properties?.title || '';
-            const isJustPrefecture = /^(北海道|.+[都府県])$/.test(title);
-            return !isJustPrefecture;
+            return isGsiMatchValid(query, title);
           });
 
           if (validItems.length > 0) {
@@ -261,12 +634,28 @@ export async function geocodeAddress(address, options = {}) {
     try {
       const nomData = await fetchNominatimThrottled(queryToSearch);
       if (Array.isArray(nomData) && nomData.length > 0) {
+        const coreKeyword = queryToSearch
+          .replace(/(高等学校|高校|中学校|学校|グラウンド|グランド|サッカー場|公園|スタジアム|第\d+)/g, '')
+          .trim();
+
         const scored = nomData
           .map((item) => {
             const name = item.display_name.split(',')[0] || item.name || '';
             const category = item.class || item.category || '';
             const type = item.type || '';
-            const score = getSoccerRelevanceScore(name, category, type);
+            let score = getSoccerRelevanceScore(name, category, type);
+
+            // コアキーワードがある場合、名前またはdisplay_nameに含まれていなければ除外/大幅減点
+            if (coreKeyword.length >= 2) {
+              const fullText = (item.display_name || '').toLowerCase();
+              const lowerKw = coreKeyword.toLowerCase();
+              if (fullText.includes(lowerKw)) {
+                score += 150;
+              } else {
+                score -= 300;
+              }
+            }
+
             return {
               item,
               name,
@@ -275,7 +664,10 @@ export async function geocodeAddress(address, options = {}) {
               lon: parseFloat(item.lon),
             };
           })
+          .filter((x) => x.score > 0)
           .sort((a, b) => b.score - a.score);
+
+        if (scored.length === 0) return null;
 
         const best = scored[0];
         const uniqueCandidates = [];
@@ -308,22 +700,34 @@ export async function geocodeAddress(address, options = {}) {
 
   let finalResult = null;
 
-  // 検索パターンA: カッコ除去後の施設名本体
-  if (cleanName && cleanName !== trimmed) {
+  // 高校名揺らぎ（「高校」->「高等学校」）のバリエーションを生成
+  const schoolVariant = cleanName.includes('高校')
+    ? cleanName.replace(/高校/g, '高等学校')
+    : trimmed.includes('高校')
+    ? trimmed.replace(/高校/g, '高等学校')
+    : null;
+
+  // 検索パターンA: 高校正式名称バリエーション（例: "流通経済大学付属柏高校" -> "流通経済大学付属柏高等学校"）
+  if (schoolVariant) {
+    finalResult = await fetchFromNominatim(schoolVariant);
+  }
+
+  // 検索パターンB: カッコ除去後の施設名本体
+  if (!finalResult && cleanName && cleanName !== trimmed) {
     finalResult = await fetchFromNominatim(cleanName);
   }
 
-  // 検索パターンB: 入力そのまま
+  // 検索パターンC: 入力そのまま
   if (!finalResult) {
     finalResult = await fetchFromNominatim(trimmed);
   }
 
-  // 検索パターンC: 国土地理院（自治体＋施設名 または 入力文字列）
+  // 検索パターンD: 国土地理院（住所として厳格に一致する場合のみ採用）
   if (!finalResult) {
     finalResult = await fetchFromGsi(cleanName || trimmed);
   }
 
-  // 検索パターンD: 自治体名フォールバック（例: "茨城県つくば市", "埼玉県羽生市"）
+  // 検索パターンE: 自治体名フォールバック（例: "茨城県つくば市", "千葉県柏市"）
   // 天気予報や概算距離の算出には十分な精度を発揮！
   if (!finalResult && extractedMuni) {
     finalResult = await fetchFromGsi(extractedMuni);
@@ -338,17 +742,20 @@ export async function geocodeAddress(address, options = {}) {
     }
   }
 
-  // 検索パターンE: 学校・施設の母体検索（例: "〇〇第2グラウンド" -> "〇〇高校"）
+  // 検索パターンF: 学校・施設の母体検索（例: "〇〇第2グラウンド" -> "〇〇高校" / "〇〇高等学校"）
   if (!finalResult && cleanName.length >= 2) {
     const schoolQuery =
-      cleanName.endsWith('高校') || cleanName.endsWith('学校')
+      cleanName.endsWith('高校') || cleanName.endsWith('学校') || cleanName.endsWith('高等学校')
         ? cleanName
         : `${cleanName}高校`;
-    const fallbackSchool = await fetchFromNominatim(schoolQuery);
-    if (fallbackSchool) {
+    finalResult = await fetchFromNominatim(schoolQuery);
+    if (!finalResult) {
+      finalResult = await fetchFromNominatim(schoolQuery.replace(/高校/g, '高等学校'));
+    }
+    if (finalResult) {
       finalResult = {
-        ...fallbackSchool,
-        displayName: `${fallbackSchool.displayName} (母体施設)`,
+        ...finalResult,
+        displayName: `${finalResult.displayName} (母体施設)`,
       };
     }
   }

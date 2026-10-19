@@ -28,12 +28,12 @@ import {
 } from './teamVaultStore';
 
 const FIREBASE_CONFIG = {
-  projectId: 'soccer-pickup-calc',
-  appId: '1:1042420843271:web:17e08946792bad06ba7ba2',
-  storageBucket: 'soccer-pickup-calc.firebasestorage.app',
-  apiKey: 'AIzaSyBSXCduEYpZJ_YbQAnGqb_yNX0SLQL0W8k',
-  authDomain: 'soccer-pickup-calc.firebaseapp.com',
-  messagingSenderId: '1042420843271',
+  apiKey: import.meta.env?.VITE_FIREBASE_API_KEY || '',
+  projectId: import.meta.env?.VITE_FIREBASE_PROJECT_ID || 'soccer-pickup-calc',
+  appId: import.meta.env?.VITE_FIREBASE_APP_ID || '',
+  storageBucket: import.meta.env?.VITE_FIREBASE_STORAGE_BUCKET || '',
+  authDomain: import.meta.env?.VITE_FIREBASE_AUTH_DOMAIN || '',
+  messagingSenderId: import.meta.env?.VITE_FIREBASE_MESSAGING_SENDER_ID || '',
 };
 
 export const FAMILY_STORAGE_KEY = 'soccer_pickup_family_id_v1';

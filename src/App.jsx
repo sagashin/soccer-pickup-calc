@@ -28,6 +28,7 @@ import {
   Copy,
   BookOpen,
   X,
+  Cloud,
 } from 'lucide-react';
 import RouteMap from './RouteMap';
 import PlaceAutocompleteInput from './PlaceAutocompleteInput';
@@ -37,12 +38,22 @@ import ScheduleCalendarView from './ScheduleCalendarView';
 import MatchWeatherChecklist from './MatchWeatherChecklist';
 import GoogleMapsKeyModal from './GoogleMapsKeyModal';
 import TeamVaultView from './TeamVaultView';
+import FamilyCloudModal from './FamilyCloudModal';
 import {
   findMatchingVenueDocs,
   mergeImportedVenueDocs,
   mergeImportedFitnessRecords,
   mergeImportedCoachNotes,
 } from './teamVaultStore';
+import {
+  getSavedFamilyId,
+  saveFamilyId,
+  parseFamilyInviteUrl,
+  pullFromCloud,
+  pushAllToCloud,
+  startFamilyRealtimeSync,
+  stopFamilyRealtimeSync,
+} from './firebaseSync';
 import {
   parseFamilyShareUrl,
   mergeImportedEvents,
@@ -510,6 +521,72 @@ export default function App() {
   const [vaultRefreshKey, setVaultRefreshKey] = useState(0);
   // 家族共有リンクから受信した際のお祝いトースト
   const [familySyncToast, setFamilySyncToast] = useState('');
+  // 家族クラウド同期（Firestore）ステート
+  const [isFamilyCloudModalOpen, setIsFamilyCloudModalOpen] = useState(false);
+  const [familyId, setFamilyId] = useState(() => getSavedFamilyId());
+
+  // 家族招待リンク (?family=...) の自動参加チェック
+  useEffect(() => {
+    const invitedFamilyId = parseFamilyInviteUrl();
+    if (invitedFamilyId) {
+      saveFamilyId(invitedFamilyId);
+      setFamilyId(invitedFamilyId);
+      setFamilySyncToast(`☁️ 家族グループ「${invitedFamilyId}」に参加しました！`);
+      pullFromCloud(invitedFamilyId).then((res) => {
+        if (res.success) {
+          setScheduleRefreshKey((k) => k + 1);
+          setVaultRefreshKey((k) => k + 1);
+        }
+      });
+      // URLクエリをクリーンアップ
+      try {
+        const cleanUrl = window.location.origin + window.location.pathname;
+        window.history.replaceState(null, '', cleanUrl);
+      } catch (_) {}
+    }
+  }, []);
+
+  // 家族クラウド自動リアルタイム同期（Firestoreの変更監視）
+  useEffect(() => {
+    if (!familyId) return;
+
+    // 初回マージ
+    pullFromCloud(familyId).then((res) => {
+      if (res.success && (res.addedEvents > 0 || res.updatedEvents > 0)) {
+        setScheduleRefreshKey((k) => k + 1);
+        setVaultRefreshKey((k) => k + 1);
+      }
+    });
+
+    // リアルタイム購読開始
+    startFamilyRealtimeSync({
+      onDataUpdated: (result) => {
+        setScheduleRefreshKey((k) => k + 1);
+        setVaultRefreshKey((k) => k + 1);
+        setFamilySyncToast(`☁️ ${result.lastUpdatedBy}がデータを更新しました`);
+        setTimeout(() => setFamilySyncToast(''), 6000);
+      },
+    });
+
+    return () => {
+      stopFamilyRealtimeSync();
+    };
+  }, [familyId]);
+
+  // 予定やノートが変更されたときにカレンダーを更新し、クラウドにも自動反映するハンドラー
+  const handleSchedulesChanged = useCallback(() => {
+    setScheduleRefreshKey((k) => k + 1);
+    if (getSavedFamilyId()) {
+      pushAllToCloud();
+    }
+  }, []);
+
+  const handleVaultChanged = useCallback(() => {
+    setVaultRefreshKey((k) => k + 1);
+    if (getSavedFamilyId()) {
+      pushAllToCloud();
+    }
+  }, []);
 
   // 家族共有リンク (?sync=... または #sync=...) の自動同期受信チェック
   // （初回起動時だけでなく、既にブラウザで開いている状態で新しいLINE共有リンクを踏んだ場合の hashchange / popstate にも対応）
@@ -561,6 +638,11 @@ export default function App() {
         setFamilySyncToast(`👨‍👩‍👦 家族共有データを取り込みました！（${syncToastParts.join('・')}）`);
         setScheduleRefreshKey((k) => k + 1);
         setVaultRefreshKey((k) => k + 1);
+
+        // クラウド接続中の場合は、取り込んだデータも自動でFirestoreに反映
+        if (getSavedFamilyId()) {
+          pushAllToCloud();
+        }
 
         if (shouldOpenSchedule) {
           setActiveTab('schedule');
@@ -1352,6 +1434,21 @@ export default function App() {
               </div>
             </div>
             <div className="flex items-center gap-1.5">
+              {/* ☁️ 家族クラウド同期ボタン */}
+              <button
+                type="button"
+                onClick={() => setIsFamilyCloudModalOpen(true)}
+                className={`px-2 py-1.5 rounded-xl transition flex items-center gap-1 text-[11px] font-bold shadow-sm ${
+                  familyId
+                    ? 'bg-teal-500/40 text-teal-100 hover:bg-teal-500/50 border border-teal-300/50'
+                    : 'bg-white/15 hover:bg-white/25 text-white/90'
+                }`}
+                title={familyId ? `家族グループ「${familyId}」と同期中` : '家族クラウド同期（合言葉設定）'}
+              >
+                <Cloud className={`w-3.5 h-3.5 ${familyId ? 'text-teal-300 animate-pulse' : 'text-emerald-200'}`} />
+                <span className="hidden sm:inline">{familyId ? '同期中' : '家族同期'}</span>
+              </button>
+
               <button
                 type="button"
                 onClick={() => setIsGmapsModalOpen(true)}
@@ -2533,7 +2630,7 @@ export default function App() {
             <div className="space-y-4">
               <ScheduleCalendarView
                 refreshTrigger={scheduleRefreshKey}
-                onSchedulesChange={() => setScheduleRefreshKey((k) => k + 1)}
+                onSchedulesChange={handleSchedulesChanged}
                 onSelectForCalculation={handleSelectScheduleForCalculation}
                 onOpenImageImporter={() => setIsScheduleImporterOpen(true)}
               />
@@ -2571,8 +2668,8 @@ export default function App() {
                       onToggleOpen={() => setIsScheduleImporterOpen((p) => !p)}
                       onApplySchedule={handleApplySchedule}
                       onSaveToSchedules={() => {
-                        // 保存されたらカレンダーを即時再描画し、モーダルを閉じる
-                        setScheduleRefreshKey((k) => k + 1);
+                        // 保存されたらカレンダーを即時再描画し、クラウド同期してモーダルを閉じる
+                        handleSchedulesChanged();
                         setIsScheduleImporterOpen(false);
                       }}
                     />
@@ -2715,7 +2812,7 @@ export default function App() {
                   calculateRoute(origin, venueName);
                 }}
                 highlightVenueName={destination}
-                onVaultChanged={() => setVaultRefreshKey((k) => k + 1)}
+                onVaultChanged={handleVaultChanged}
               />
             </div>
           )}
@@ -2856,6 +2953,22 @@ export default function App() {
             if (k) {
               calculateRoute(origin, destination);
             }
+          }}
+        />
+
+        {/* ☁️ 家族クラウド自動同期モーダル */}
+        <FamilyCloudModal
+          isOpen={isFamilyCloudModalOpen}
+          onClose={() => setIsFamilyCloudModalOpen(false)}
+          familyId={familyId}
+          onFamilyIdChanged={(newId) => {
+            setFamilyId(newId);
+            setScheduleRefreshKey((k) => k + 1);
+            setVaultRefreshKey((k) => k + 1);
+          }}
+          onManualSyncCompleted={() => {
+            setScheduleRefreshKey((k) => k + 1);
+            setVaultRefreshKey((k) => k + 1);
           }}
         />
       </div>

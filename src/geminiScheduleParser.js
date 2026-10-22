@@ -244,7 +244,6 @@ export async function generateGeminiJson({ prompt, base64Data, mimeType, apiKey 
     'gemini-flash-lite-latest',
     'gemini-3.1-pro-preview',
     'gemini-pro-latest',
-    'gemini-2.5-flash', // 旧プロジェクト用の最終フォールバックのみ
   ];
 
   const excludedTokens = [
@@ -260,6 +259,7 @@ export async function generateGeminiJson({ prompt, base64Data, mimeType, apiKey 
     'gemma',
     '1.5',
     '2.0',
+    '2.5',
   ];
 
   // 1. Google APIからこのAPIキーで実際に使えるモデル一覧を動的に取得

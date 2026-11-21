@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
   Camera,
   Upload,
@@ -48,6 +48,9 @@ export default function ScheduleImageImporter({
   const [tempApiKey, setTempApiKey] = useState('');
 
   const [analyzing, setAnalyzing] = useState(false);
+  const [parseMode, setParseMode] = useState('fast');
+  const [analysisStage, setAnalysisStage] = useState('');
+  const [elapsedSec, setElapsedSec] = useState(0);
   const [errorMessage, setErrorMessage] = useState('');
 
   const [parsedEvents, setParsedEvents] = useState([]);
@@ -56,6 +59,16 @@ export default function ScheduleImageImporter({
   const [customLeadMinutes, setCustomLeadMinutes] = useState('');
 
   const fileInputRef = useRef(null);
+
+  useEffect(() => {
+    if (!analyzing) return undefined;
+    const startedAt = performance.now();
+    setElapsedSec(0);
+    const timerId = setInterval(() => {
+      setElapsedSec((performance.now() - startedAt) / 1000);
+    }, 100);
+    return () => clearInterval(timerId);
+  }, [analyzing]);
 
   const handleSaveApiKey = (e) => {
     e.preventDefault();
@@ -75,22 +88,39 @@ export default function ScheduleImageImporter({
       return;
     }
 
+    const startedAt = performance.now();
     try {
       setAnalyzing(true);
       setErrorMessage('');
-      const { base64, mimeType } = await fileToBase64(file);
+      setSaveSuccessMessage('');
+      setAnalysisStage('画像を軽量化しています...');
 
-      const events = await parseScheduleImageWithGemini(base64, mimeType, apiKey);
+      const resizeOptions =
+        parseMode === 'fast'
+          ? { maxDimension: 1152, quality: 0.72 }
+          : { maxDimension: 1600, quality: 0.85 };
+      const { base64, mimeType } = await fileToBase64(file, resizeOptions);
+
+      setAnalysisStage(
+        parseMode === 'fast'
+          ? 'AI（高速モード）で予定を読み取り中...'
+          : 'AI（高精度モード）で予定を読み取り中...'
+      );
+      const events = await parseScheduleImageWithGemini(base64, mimeType, apiKey, {
+        mode: parseMode,
+      });
       if (events.length === 0) {
         setErrorMessage('画像・PDFから予定を検出できませんでした。別のファイルをお試しいただくか、サンプルデータをお試しください。');
       } else {
+        setAnalysisStage('カレンダーへ保存中...');
         setParsedEvents(events);
         setSelectedEventId(events[0].id);
         // 解析完了と同時に自動でスケジュール帳にもスマート蓄積（LINE共有時に漏れないようにする）
         const currentLead = customLeadMinutes !== '' ? Number(customLeadMinutes) : meetingLeadMinutes;
         const result = mergeImportedEvents(events, currentLead);
+        const totalSec = ((performance.now() - startedAt) / 1000).toFixed(1);
         setSaveSuccessMessage(
-          `🎉 画像から${events.length}件を検出し、カレンダーへ自動保存しました！（新規${result.addedCount}件・更新${result.updatedCount}件）`
+          `🎉 画像から${events.length}件を${totalSec}秒で検出し、カレンダーへ自動保存しました！（新規${result.addedCount}件・更新${result.updatedCount}件）`
         );
         if (onSaveToSchedules) {
           onSaveToSchedules(result.schedules);
@@ -101,6 +131,7 @@ export default function ScheduleImageImporter({
       setErrorMessage(err.message || '画像の解析中にエラーが発生しました。');
     } finally {
       setAnalyzing(false);
+      setAnalysisStage('');
       if (fileInputRef.current) fileInputRef.current.value = '';
     }
   };
@@ -264,19 +295,54 @@ export default function ScheduleImageImporter({
             </form>
           )}
 
+          {/* 速度・精度モード切替 */}
+          <div className="bg-slate-100 p-1 rounded-2xl grid grid-cols-2 gap-1 text-[11px] font-extrabold">
+            <button
+              type="button"
+              disabled={analyzing}
+              onClick={() => setParseMode('fast')}
+              className={`py-1.5 px-2 rounded-xl flex items-center justify-center transition disabled:opacity-60 ${
+                parseMode === 'fast'
+                  ? 'bg-white text-emerald-700 shadow-sm'
+                  : 'text-slate-600 hover:text-slate-800'
+              }`}
+            >
+              ⚡ 高速（推奨）
+            </button>
+            <button
+              type="button"
+              disabled={analyzing}
+              onClick={() => setParseMode('accurate')}
+              className={`py-1.5 px-2 rounded-xl flex items-center justify-center transition disabled:opacity-60 ${
+                parseMode === 'accurate'
+                  ? 'bg-white text-sky-700 shadow-sm'
+                  : 'text-slate-600 hover:text-slate-800'
+              }`}
+            >
+              🎯 高精度（細かい表向け）
+            </button>
+          </div>
+
           {/* アップロードエリア */}
-          <div className="bg-white rounded-2xl p-3 border-2 border-dashed border-emerald-300 flex flex-col items-center justify-center space-y-2 text-center transition hover:border-emerald-500">
+          <div
+            className={`bg-white rounded-2xl p-3 border-2 border-dashed border-emerald-300 flex flex-col items-center justify-center space-y-2 text-center transition ${
+              analyzing ? 'opacity-60 pointer-events-none' : 'hover:border-emerald-500'
+            }`}
+          >
             <input
               ref={fileInputRef}
               type="file"
               accept="image/*,application/pdf"
+              disabled={analyzing}
               onChange={handleFileSelect}
               className="hidden"
               id="schedule-image-input"
             />
             <label
               htmlFor="schedule-image-input"
-              className="cursor-pointer w-full flex flex-col items-center py-2"
+              className={`w-full flex flex-col items-center py-2 ${
+                analyzing ? 'cursor-wait' : 'cursor-pointer'
+              }`}
             >
               <div className="w-10 h-10 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center mb-1.5 shadow-inner">
                 <Upload className="w-5 h-5" />
@@ -292,10 +358,13 @@ export default function ScheduleImageImporter({
 
           {/* ローディング表示 */}
           {analyzing && (
-            <div className="py-6 flex flex-col items-center justify-center space-y-2 bg-white/70 rounded-2xl border border-emerald-200">
+            <div className="py-5 flex flex-col items-center justify-center space-y-1.5 bg-white/80 rounded-2xl border border-emerald-200">
               <div className="w-7 h-7 border-4 border-emerald-600 border-t-transparent rounded-full animate-spin" />
               <p className="text-xs font-black text-emerald-950">
-                AIが日程表から試合・予定を解析中...
+                {analysisStage || 'AIが日程表から試合・予定を解析中...'}
+              </p>
+              <p className="text-[11px] font-bold text-emerald-700 tabular-nums">
+                {elapsedSec.toFixed(1)}秒経過
               </p>
               <p className="text-[10px] text-slate-500">
                 キックオフ時間・対戦相手・会場を自動抽出しています

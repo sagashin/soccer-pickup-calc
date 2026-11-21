@@ -1,13 +1,6 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import {
   Sun,
-  CloudSun,
-  Cloud,
-  CloudRain,
-  CloudDrizzle,
-  CloudSnow,
-  CloudLightning,
-  CloudFog,
   CheckSquare,
   Square,
   Shirt,
@@ -18,10 +11,9 @@ import {
   Trash2,
   ChevronDown,
   ChevronUp,
-  Thermometer,
-  Umbrella,
 } from 'lucide-react';
-import { parseWeatherCode } from './weatherService';
+import { fetchWeatherByCoords } from './weatherService';
+import { safeGetItem, safeSetItem } from './utils/storage';
 
 const STORAGE_KEYS = {
   CHECKED_ITEMS: 'soccer_checklist_checked_v1',
@@ -44,7 +36,7 @@ export default function MatchWeatherChecklist({
   // ユニフォーム設定
   const [uniformMode, setUniformMode] = useState(() => {
     try {
-      const saved = localStorage.getItem(STORAGE_KEYS.UNIFORM_PREF);
+      const saved = safeGetItem(STORAGE_KEYS.UNIFORM_PREF, null);
       return saved ? JSON.parse(saved) : { type: 'both', note1st: '白 (1st)', note2nd: '青 (2nd)' };
     } catch {
       return { type: 'both', note1st: '白 (1st)', note2nd: '青 (2nd)' };
@@ -54,7 +46,7 @@ export default function MatchWeatherChecklist({
   // チェック済みアイテムIDのSet
   const [checkedItems, setCheckedItems] = useState(() => {
     try {
-      const saved = localStorage.getItem(STORAGE_KEYS.CHECKED_ITEMS);
+      const saved = safeGetItem(STORAGE_KEYS.CHECKED_ITEMS, null);
       return saved ? new Set(JSON.parse(saved)) : new Set();
     } catch {
       return new Set();
@@ -64,7 +56,7 @@ export default function MatchWeatherChecklist({
   // 自由追加カスタムアイテム
   const [customItems, setCustomItems] = useState(() => {
     try {
-      const saved = localStorage.getItem(STORAGE_KEYS.CUSTOM_ITEMS);
+      const saved = safeGetItem(STORAGE_KEYS.CUSTOM_ITEMS, null);
       return saved ? JSON.parse(saved) : [];
     } catch {
       return [];
@@ -74,81 +66,57 @@ export default function MatchWeatherChecklist({
 
   // ユニフォーム設定の保存
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.UNIFORM_PREF, JSON.stringify(uniformMode));
+    safeSetItem(STORAGE_KEYS.UNIFORM_PREF, JSON.stringify(uniformMode));
   }, [uniformMode]);
 
   // チェック状態の保存
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.CHECKED_ITEMS, JSON.stringify(Array.from(checkedItems)));
+    safeSetItem(STORAGE_KEYS.CHECKED_ITEMS, JSON.stringify(Array.from(checkedItems)));
   }, [checkedItems]);
 
   // カスタム持ち物の保存
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.CUSTOM_ITEMS, JSON.stringify(customItems));
+    safeSetItem(STORAGE_KEYS.CUSTOM_ITEMS, JSON.stringify(customItems));
   }, [customItems]);
 
-  // Open-Meteo APIから目的地の指定日の天気を取得
+  // weatherService の共有キャッシュ経由で目的地の指定日の天気を取得
   useEffect(() => {
-    if (!destGeo?.lat || !destGeo?.lon) return;
+    if (typeof destGeo?.lat !== 'number' || typeof destGeo?.lon !== 'number' || !travelDate) {
+      setWeatherData(null);
+      return;
+    }
 
     let isMounted = true;
     setWeatherLoading(true);
     setWeatherError('');
 
-    const fetchWeather = async () => {
-      try {
-        const lat = destGeo.lat.toFixed(4);
-        const lon = destGeo.lon.toFixed(4);
-        const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&daily=weathercode,temperature_2m_max,temperature_2m_min,precipitation_probability_max&timezone=Asia%2FTokyo&forecast_days=16`;
-
-        const res = await fetch(url);
-        if (!res.ok) throw new Error('天気予報の取得に失敗しました');
-        const data = await res.json();
+    fetchWeatherByCoords(destGeo.lat, destGeo.lon, travelDate, destName || '')
+      .then((res) => {
         if (!isMounted) return;
-
-        if (data?.daily?.time && Array.isArray(data.daily.time)) {
-          // travelDate と一致するインデックスを探す。なければ先頭（今日）
-          let targetIdx = data.daily.time.indexOf(travelDate);
-          if (targetIdx === -1) {
-            targetIdx = 0; // 該当がなければ当日の予報
-          }
-
-          const code = data.daily.weathercode[targetIdx];
-          const tempMax = Math.round(data.daily.temperature_2m_max[targetIdx]);
-          const tempMin = Math.round(data.daily.temperature_2m_min[targetIdx]);
-          const precipProb = data.daily.precipitation_probability_max
-            ? data.daily.precipitation_probability_max[targetIdx] ?? 0
-            : 0;
-
-          setWeatherData({
-            date: data.daily.time[targetIdx],
-            isDateMatched: targetIdx === data.daily.time.indexOf(travelDate),
-            code,
-            ...parseWeatherCode(code),
-            tempMax,
-            tempMin,
-            precipProb,
-          });
+        if (!res) {
+          setWeatherError('天気を取得できませんでした');
+          setWeatherData(null);
+        } else {
+          setWeatherData(res);
         }
-      } catch (err) {
+      })
+      .catch((err) => {
         if (!isMounted) return;
         console.warn('Weather fetch error:', err);
         setWeatherError('天気を取得できませんでした');
-      } finally {
+      })
+      .finally(() => {
         if (isMounted) setWeatherLoading(false);
-      }
-    };
-
-    fetchWeather();
+      });
 
     return () => {
       isMounted = false;
     };
-  }, [destGeo?.lat, destGeo?.lon, travelDate]);
+  }, [destGeo?.lat, destGeo?.lon, travelDate, destName]);
 
-  // 天候・気温に応じたアドバイス
+  // 天候・気温に応じたアドバイス（16日以上先で未発表時は表示しない）
   const weatherAdvices = useMemo(() => {
-    if (!weatherData) return [];
+    if (!weatherData || weatherData.unavailable) return [];
     const list = [];
 
     const isRainy =
@@ -194,14 +162,15 @@ export default function MatchWeatherChecklist({
     return list;
   }, [weatherData]);
 
-  // 天候連動で組み立てる持ち物リスト
+  // 天候連動で組み立てる持ち物リスト（予報対象外時は誤追加しない）
   const computedPackingList = useMemo(() => {
+    const hasForecast = Boolean(weatherData && !weatherData.unavailable);
     const isRainy =
-      weatherData &&
+      hasForecast &&
       (weatherData.precipProb >= 35 ||
         [51, 53, 55, 61, 63, 65, 80, 81, 82, 95, 96, 99].includes(weatherData.code));
-    const isHot = weatherData && weatherData.tempMax >= 25;
-    const isCold = weatherData && weatherData.tempMin <= 13;
+    const isHot = hasForecast && weatherData.tempMax >= 25;
+    const isCold = hasForecast && weatherData.tempMin <= 13;
 
     const sections = [];
 
@@ -431,7 +400,7 @@ export default function MatchWeatherChecklist({
               <div className="flex items-center gap-2">
                 {weatherLoading ? (
                   <div className="w-5 h-5 border-2 border-sky-600 border-t-transparent rounded-full animate-spin" />
-                ) : weatherData ? (
+                ) : weatherData && !weatherData.unavailable && weatherData.Icon ? (
                   <weatherData.Icon className={`w-6 h-6 ${weatherData.colorClass}`} />
                 ) : (
                   <Sun className="w-6 h-6 text-amber-500" />
@@ -439,37 +408,38 @@ export default function MatchWeatherChecklist({
                 <div>
                   <div className="text-xs font-extrabold text-slate-900 flex items-center gap-1.5 flex-wrap">
                     <span>
-                      {weatherData
+                      {weatherData && !weatherData.unavailable
                         ? `${weatherData.date} の目的地天気: ${weatherData.label}`
+                        : weatherData?.unavailable
+                        ? `${weatherData.date} の天気予報は未発表です`
                         : '目的地周辺の天気予報'}
                     </span>
-                    {weatherData && (
+                    {weatherData && !weatherData.unavailable && (
                       <span className="text-[10px] font-bold text-slate-500">
                         (降水確率 {weatherData.precipProb}%)
                       </span>
                     )}
-                    {weatherData && !weatherData.isDateMatched && (
-                      <span className="text-[10px] font-bold text-amber-700 bg-amber-100 px-1.5 py-0.2 rounded">
-                        ※直近参考
+                    {weatherData?.unavailable && (
+                      <span className="text-[10px] font-bold text-amber-700 bg-amber-100 px-1.5 py-0.5 rounded">
+                        予報対象外
                       </span>
                     )}
                   </div>
-                  {weatherData && (
+                  {weatherData && !weatherData.unavailable ? (
                     <div className="text-[11px] font-bold text-slate-600 flex items-center gap-2 mt-0.5">
                       <span className="text-rose-600">最高 {weatherData.tempMax}℃</span>
                       <span className="text-slate-300">|</span>
                       <span className="text-sky-600">最低 {weatherData.tempMin}℃</span>
-                      {!weatherData.isDateMatched && (
-                        <span className="text-[10px] text-slate-400 font-normal">
-                          (7日以上先のため本日の参考値)
-                        </span>
-                      )}
                     </div>
-                  )}
+                  ) : weatherData?.unavailable ? (
+                    <div className="text-[11px] font-medium text-slate-500 mt-0.5">
+                      16日以上先の予定のため予報範囲外です（試合の2週間前から自動で天候連動します）
+                    </div>
+                  ) : null}
                 </div>
               </div>
 
-              {weatherData && (
+              {weatherData && !weatherData.unavailable && (
                 <div className="text-right">
                   <span className="inline-block text-[11px] font-black px-2.5 py-1 rounded-xl bg-white border border-slate-200 text-slate-700 shadow-sm">
                     {weatherData.tempMax >= 25 ? '☀️ 夏日注意' : weatherData.tempMin <= 12 ? '❄️ 防寒必須' : '🌤️ 快適'}
@@ -579,17 +549,17 @@ export default function MatchWeatherChecklist({
                     return (
                       <div
                         key={item.id}
-                        onClick={() => toggleItem(item.id)}
-                        role="button"
-                        tabIndex={0}
-                        onKeyDown={(e) => e.key === 'Enter' && toggleItem(item.id)}
-                        className={`flex items-center justify-between p-2 rounded-xl transition cursor-pointer select-none active:scale-[0.99] ${
+                        className={`flex items-center justify-between rounded-xl transition ${
                           isChecked
-                            ? 'bg-emerald-50/90 text-slate-400 line-through'
+                            ? 'bg-emerald-50/90 text-slate-400'
                             : 'hover:bg-white text-slate-900 font-extrabold'
                         }`}
                       >
-                        <div className="flex items-center gap-2.5 min-w-0 pr-2">
+                        <button
+                          type="button"
+                          onClick={() => toggleItem(item.id)}
+                          className="flex-1 flex items-center gap-2.5 min-w-0 p-2 text-left active:scale-[0.99]"
+                        >
                           {isChecked ? (
                             <CheckSquare className="w-5 h-5 text-emerald-600 shrink-0" />
                           ) : (
@@ -602,14 +572,14 @@ export default function MatchWeatherChecklist({
                           >
                             {item.label}
                           </span>
-                        </div>
+                        </button>
 
                         {item.isCustom && (
                           <button
                             type="button"
                             onClick={(e) => handleDeleteCustomItem(item.id, e)}
-                            className="p-1 text-slate-400 hover:text-rose-600 rounded-md transition"
-                            aria-label="削除"
+                            className="p-2 text-slate-400 hover:text-rose-600 rounded-md transition shrink-0"
+                            aria-label={`${item.label}を削除`}
                           >
                             <Trash2 className="w-3.5 h-3.5" />
                           </button>

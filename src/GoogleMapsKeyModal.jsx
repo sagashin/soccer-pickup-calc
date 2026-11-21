@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Key, Sparkles, CheckCircle, AlertCircle, X, ExternalLink } from 'lucide-react';
 import {
-  GOOGLE_MAPS_API_KEY_STORAGE,
   getSavedGoogleMapsApiKey,
   saveGoogleMapsApiKey,
   geocodeWithGoogleMaps,
@@ -18,6 +17,15 @@ export default function GoogleMapsKeyModal({ isOpen, onClose, onKeySaved }) {
       setTestResult(null);
     }
   }, [isOpen]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const onKeyDown = (e) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [isOpen, onClose]);
 
   if (!isOpen) return null;
 
@@ -68,7 +76,15 @@ export default function GoogleMapsKeyModal({ isOpen, onClose, onKeySaved }) {
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-200">
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="gmaps-modal-title"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+      className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4"
+    >
       <div className="bg-white rounded-3xl max-w-md w-full shadow-2xl border border-slate-200 overflow-hidden">
         {/* ヘッダー */}
         <div className="bg-gradient-to-r from-blue-600 via-indigo-600 to-emerald-600 text-white p-5 flex items-start justify-between">
@@ -77,7 +93,7 @@ export default function GoogleMapsKeyModal({ isOpen, onClose, onKeySaved }) {
               <Sparkles className="w-5 h-5 text-amber-300" />
             </div>
             <div>
-              <h3 className="text-base font-extrabold flex items-center gap-1.5">
+              <h3 id="gmaps-modal-title" className="text-base font-extrabold flex items-center gap-1.5">
                 Google Maps 検索連動設定
               </h3>
               <p className="text-xs text-blue-100">

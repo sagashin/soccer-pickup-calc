@@ -1,5 +1,8 @@
-import { generateGeminiJson } from './geminiScheduleParser';
-import { getLocalDateIso } from './scheduleStore';
+import { generateGeminiJson } from './geminiScheduleParser.js';
+import { getLocalDateIso } from './scheduleStore.js';
+import { safeGetItem, safeSetItem } from './utils/storage.js';
+import { sanitizeHttpUrl } from './utils/urlUtils.js';
+import { markDeleted, clearDeleted } from './utils/tombstones.js';
 
 /**
  * 📚 チームノート（会場・駐車場資料 / 体力測定記録 / コーチ助言・リンク）ストア
@@ -287,30 +290,23 @@ export async function deleteAttachmentFromIdb(id) {
 
 export function getVenueDocs() {
   try {
-    const raw = localStorage.getItem(VENUE_DOCS_KEY);
-    if (raw === null) {
-      // 初回アクセス時はサンプルを入れておくことで会場ルール通知を即座に体験可能にする
-      localStorage.setItem(VENUE_DOCS_KEY, JSON.stringify(SAMPLE_VENUE_DOCS));
-      return [...SAMPLE_VENUE_DOCS];
-    }
+    const raw = safeGetItem(VENUE_DOCS_KEY, null);
+    if (raw === null) return [];
     const parsed = JSON.parse(raw);
     return Array.isArray(parsed) ? parsed : [];
-  } catch (_) {
+  } catch {
     return [];
   }
 }
 
 export function saveVenueDocs(list) {
-  try {
-    localStorage.setItem(VENUE_DOCS_KEY, JSON.stringify(list));
-  } catch (e) {
-    console.error('Failed to save venue docs:', e);
-  }
+  safeSetItem(VENUE_DOCS_KEY, JSON.stringify(list));
 }
 
 export function upsertVenueDoc(doc) {
   const list = getVenueDocs();
   const id = doc.id || `vdoc-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+  const now = Date.now();
   const normalized = {
     id,
     title: (doc.title || doc.venueName || '会場資料').trim(),
@@ -325,8 +321,11 @@ export function upsertVenueDoc(doc) {
     hasAttachment: Boolean(doc.hasAttachment),
     attachmentMimeType: doc.attachmentMimeType || '',
     attachmentFileName: doc.attachmentFileName || '',
-    createdAt: doc.createdAt || Date.now(),
+    createdAt: doc.createdAt || now,
+    updatedAt: now,
   };
+
+  clearDeleted('venueDocs', id);
 
   const idx = list.findIndex((item) => item.id === id);
   let next;
@@ -341,6 +340,7 @@ export function upsertVenueDoc(doc) {
 }
 
 export function deleteVenueDoc(id) {
+  markDeleted('venueDocs', id);
   const list = getVenueDocs().filter((item) => item.id !== id);
   saveVenueDocs(list);
   deleteAttachmentFromIdb(id);
@@ -351,30 +351,24 @@ export function deleteVenueDoc(id) {
 
 export function getFitnessRecords() {
   try {
-    const raw = localStorage.getItem(FITNESS_RECORDS_KEY);
-    if (raw === null) {
-      localStorage.setItem(FITNESS_RECORDS_KEY, JSON.stringify(SAMPLE_FITNESS_RECORDS));
-      return [...SAMPLE_FITNESS_RECORDS];
-    }
+    const raw = safeGetItem(FITNESS_RECORDS_KEY, null);
+    if (raw === null) return [];
     const parsed = JSON.parse(raw);
     return Array.isArray(parsed) ? parsed : [];
-  } catch (_) {
+  } catch {
     return [];
   }
 }
 
 export function saveFitnessRecords(list) {
-  try {
-    localStorage.setItem(FITNESS_RECORDS_KEY, JSON.stringify(list));
-  } catch (e) {
-    console.error('Failed to save fitness records:', e);
-  }
+  safeSetItem(FITNESS_RECORDS_KEY, JSON.stringify(list));
 }
 
 export function upsertFitnessRecord(record) {
   const list = getFitnessRecords();
   const id = record.id || `fit-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
   const numVal = parseFloat(record.value);
+  const now = Date.now();
   const normalized = {
     id,
     dateIso: record.dateIso || getLocalDateIso(),
@@ -384,8 +378,11 @@ export function upsertFitnessRecord(record) {
     category: record.category || 'スピード',
     notes: (record.notes || '').trim(),
     hasAttachment: Boolean(record.hasAttachment),
-    createdAt: record.createdAt || Date.now(),
+    createdAt: record.createdAt || now,
+    updatedAt: now,
   };
+
+  clearDeleted('fitnessRecords', id);
 
   const idx = list.findIndex((item) => item.id === id);
   let next;
@@ -400,6 +397,7 @@ export function upsertFitnessRecord(record) {
 }
 
 export function deleteFitnessRecord(id) {
+  markDeleted('fitnessRecords', id);
   const list = getFitnessRecords().filter((item) => item.id !== id);
   saveFitnessRecords(list);
   deleteAttachmentFromIdb(id);
@@ -473,29 +471,37 @@ export function analyzeFitnessProgress(records) {
 
 export function getCoachNotes() {
   try {
-    const raw = localStorage.getItem(COACH_NOTES_KEY);
-    if (raw === null) {
-      localStorage.setItem(COACH_NOTES_KEY, JSON.stringify(SAMPLE_COACH_NOTES));
-      return [...SAMPLE_COACH_NOTES];
-    }
+    const raw = safeGetItem(COACH_NOTES_KEY, null);
+    if (raw === null) return [];
     const parsed = JSON.parse(raw);
     return Array.isArray(parsed) ? parsed : [];
-  } catch (_) {
+  } catch {
     return [];
   }
 }
 
 export function saveCoachNotes(list) {
-  try {
-    localStorage.setItem(COACH_NOTES_KEY, JSON.stringify(list));
-  } catch (e) {
-    console.error('Failed to save coach notes:', e);
-  }
+  safeSetItem(COACH_NOTES_KEY, JSON.stringify(list));
+}
+
+function sanitizeLinksArray(rawLinks) {
+  if (!Array.isArray(rawLinks)) return [];
+  return rawLinks
+    .map((l) => {
+      const safeUrl = sanitizeHttpUrl(l?.url);
+      if (!safeUrl) return null;
+      return {
+        title: String(l?.title || safeUrl || '参考リンク').trim(),
+        url: safeUrl,
+      };
+    })
+    .filter(Boolean);
 }
 
 export function upsertCoachNote(note) {
   const list = getCoachNotes();
   const id = note.id || `cnote-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+  const now = Date.now();
   const normalized = {
     id,
     dateIso: note.dateIso || getLocalDateIso(),
@@ -505,18 +511,14 @@ export function upsertCoachNote(note) {
     actionItems: Array.isArray(note.actionItems)
       ? note.actionItems.map((a) => String(a).trim()).filter(Boolean)
       : [],
-    links: Array.isArray(note.links)
-      ? note.links
-          .map((l) => ({
-            title: String(l?.title || l?.url || '参考リンク').trim(),
-            url: String(l?.url || '').trim(),
-          }))
-          .filter((l) => l.url)
-      : [],
+    links: sanitizeLinksArray(note.links),
     hasAttachment: Boolean(note.hasAttachment),
     attachmentMimeType: note.attachmentMimeType || '',
-    createdAt: note.createdAt || Date.now(),
+    createdAt: note.createdAt || now,
+    updatedAt: now,
   };
+
+  clearDeleted('coachNotes', id);
 
   const idx = list.findIndex((item) => item.id === id);
   let next;
@@ -531,6 +533,7 @@ export function upsertCoachNote(note) {
 }
 
 export function deleteCoachNote(id) {
+  markDeleted('coachNotes', id);
   const list = getCoachNotes().filter((item) => item.id !== id);
   saveCoachNotes(list);
   deleteAttachmentFromIdb(id);
@@ -672,7 +675,41 @@ ${hasText ? `\n【入力テキスト】\n${text.trim()}\n` : ''}
   });
 }
 
-// ==================== 家族共有マージ関数 ====================
+// ==================== 家族共有マージ & 削除同期関数 ====================
+
+/**
+ * 他端末からのトゥームストーンに基づきローカルの削除対象を除去
+ */
+export function removeDeletedFromVault(deletedIds) {
+  if (!deletedIds || typeof deletedIds !== 'object') return false;
+  let changed = false;
+
+  const filterCol = (list, delMap, deleteAtt = false) => {
+    if (!delMap || typeof delMap !== 'object') return list;
+    return list.filter((item) => {
+      const delTs = delMap[item.id];
+      if (!delTs) return true;
+      const itemTs = item.updatedAt || item.createdAt || 0;
+      if (delTs >= itemTs) {
+        changed = true;
+        if (deleteAtt) deleteAttachmentFromIdb(item.id);
+        return false;
+      }
+      return true;
+    });
+  };
+
+  const nextVenue = filterCol(getVenueDocs(), deletedIds.venueDocs, true);
+  const nextFit = filterCol(getFitnessRecords(), deletedIds.fitnessRecords, true);
+  const nextCoach = filterCol(getCoachNotes(), deletedIds.coachNotes, true);
+
+  if (changed) {
+    saveVenueDocs(nextVenue);
+    saveFitnessRecords(nextFit);
+    saveCoachNotes(nextCoach);
+  }
+  return changed;
+}
 
 /**
  * 共有リンクから取り込んだ会場・駐車場資料を既存データと重複なくマージ
@@ -692,14 +729,20 @@ export function mergeImportedVenueDocs(importedDocs) {
     const normTitle = (imp.title || '').trim().toLowerCase();
     const normVenue = (imp.venueName || '').trim().toLowerCase();
 
-    const idx = list.findIndex((item) => {
-      const itemTitle = (item.title || '').trim().toLowerCase();
-      const itemVenue = (item.venueName || '').trim().toLowerCase();
-      return (normTitle && itemTitle === normTitle) || (normVenue && itemVenue === normVenue);
-    });
+    let idx = imp.id ? list.findIndex((item) => item.id === imp.id) : -1;
+    if (idx < 0) {
+      idx = list.findIndex((item) => {
+        const itemTitle = (item.title || '').trim().toLowerCase();
+        const itemVenue = (item.venueName || '').trim().toLowerCase();
+        return (normTitle && itemTitle === normTitle) || (normVenue && itemVenue === normVenue);
+      });
+    }
 
     if (idx >= 0) {
       const existing = list[idx];
+      if (existing.updatedAt && imp.updatedAt && existing.updatedAt > imp.updatedAt) {
+        return; // ローカルの方が新しいためスキップ
+      }
       list[idx] = {
         ...existing,
         title: imp.title || existing.title,
@@ -709,11 +752,13 @@ export function mergeImportedVenueDocs(importedDocs) {
         parkingRules: imp.parkingRules || existing.parkingRules,
         cautions: Array.isArray(imp.cautions) && imp.cautions.length > 0 ? imp.cautions : existing.cautions,
         dateIso: imp.dateIso || existing.dateIso,
+        updatedAt: Math.max(existing.updatedAt || 0, imp.updatedAt || Date.now()),
       };
       updatedCount++;
     } else {
+      const now = Date.now();
       const newItem = {
-        id: imp.id || `doc-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        id: imp.id || `doc-${now}-${Math.random().toString(36).slice(2, 6)}`,
         title: imp.title || `${imp.venueName || '会場'} 案内資料`,
         venueName: imp.venueName || '',
         docType: imp.docType || '駐車場ルール',
@@ -724,7 +769,8 @@ export function mergeImportedVenueDocs(importedDocs) {
         hasAttachment: false,
         attachmentMimeType: '',
         attachmentFileName: '',
-        createdAt: imp.createdAt || Date.now(),
+        createdAt: imp.createdAt || now,
+        updatedAt: imp.updatedAt || now,
       };
       list = [newItem, ...list];
       addedCount++;
@@ -753,31 +799,45 @@ export function mergeImportedFitnessRecords(importedRecords) {
     const dateIso = imp.dateIso || getLocalDateIso();
     const eventName = imp.eventName.trim();
 
-    const idx = list.findIndex(
-      (item) => item.dateIso === dateIso && (item.eventName || '').trim() === eventName
-    );
+    let idx = imp.id ? list.findIndex((item) => item.id === imp.id) : -1;
+    if (idx < 0) {
+      idx = list.findIndex(
+        (item) => item.dateIso === dateIso && (item.eventName || '').trim() === eventName
+      );
+    }
+
+    const parsedImpVal =
+      typeof imp.value === 'number' && !Number.isNaN(imp.value)
+        ? imp.value
+        : parseFloat(imp.value);
 
     if (idx >= 0) {
       const existing = list[idx];
+      if (existing.updatedAt && imp.updatedAt && existing.updatedAt > imp.updatedAt) {
+        return;
+      }
       list[idx] = {
         ...existing,
-        value: typeof imp.value === 'number' ? imp.value : parseFloat(imp.value) || existing.value,
+        value: !Number.isNaN(parsedImpVal) ? parsedImpVal : existing.value,
         unit: imp.unit || existing.unit,
         category: imp.category || existing.category,
         notes: imp.notes || existing.notes,
+        updatedAt: Math.max(existing.updatedAt || 0, imp.updatedAt || Date.now()),
       };
       updatedCount++;
     } else {
+      const now = Date.now();
       const newItem = {
-        id: imp.id || `fit-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        id: imp.id || `fit-${now}-${Math.random().toString(36).slice(2, 6)}`,
         dateIso,
         eventName,
-        value: typeof imp.value === 'number' ? imp.value : parseFloat(imp.value) || 0,
+        value: !Number.isNaN(parsedImpVal) ? parsedImpVal : 0,
         unit: imp.unit || '秒',
         category: imp.category || 'スピード',
         notes: imp.notes || '',
         hasAttachment: false,
-        createdAt: imp.createdAt || Date.now(),
+        createdAt: imp.createdAt || now,
+        updatedAt: imp.updatedAt || now,
       };
       list = [newItem, ...list];
       addedCount++;
@@ -806,31 +866,45 @@ export function mergeImportedCoachNotes(importedNotes) {
     const dateIso = imp.dateIso || getLocalDateIso();
     const title = imp.title.trim().toLowerCase();
 
-    const idx = list.findIndex(
-      (item) => item.dateIso === dateIso && (item.title || '').trim().toLowerCase() === title
-    );
+    let idx = imp.id ? list.findIndex((item) => item.id === imp.id) : -1;
+    if (idx < 0) {
+      idx = list.findIndex(
+        (item) => item.dateIso === dateIso && (item.title || '').trim().toLowerCase() === title
+      );
+    }
+
+    const sanitizedLinks = sanitizeLinksArray(imp.links);
 
     if (idx >= 0) {
       const existing = list[idx];
+      if (existing.updatedAt && imp.updatedAt && existing.updatedAt > imp.updatedAt) {
+        return;
+      }
       list[idx] = {
         ...existing,
         category: imp.category || existing.category,
         content: imp.content || existing.content,
-        actionItems: Array.isArray(imp.actionItems) && imp.actionItems.length > 0 ? imp.actionItems : existing.actionItems,
-        links: Array.isArray(imp.links) && imp.links.length > 0 ? imp.links : existing.links,
+        actionItems:
+          Array.isArray(imp.actionItems) && imp.actionItems.length > 0
+            ? imp.actionItems
+            : existing.actionItems,
+        links: Array.isArray(imp.links) ? sanitizedLinks : existing.links,
+        updatedAt: Math.max(existing.updatedAt || 0, imp.updatedAt || Date.now()),
       };
       updatedCount++;
     } else {
+      const now = Date.now();
       const newItem = {
-        id: imp.id || `cnote-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        id: imp.id || `cnote-${now}-${Math.random().toString(36).slice(2, 6)}`,
         dateIso,
         title: imp.title.trim(),
         category: imp.category || '個人課題',
         content: imp.content || '',
         actionItems: Array.isArray(imp.actionItems) ? imp.actionItems : [],
-        links: Array.isArray(imp.links) ? imp.links : [],
+        links: sanitizedLinks,
         hasAttachment: false,
-        createdAt: imp.createdAt || Date.now(),
+        createdAt: imp.createdAt || now,
+        updatedAt: imp.updatedAt || now,
       };
       list = [newItem, ...list];
       addedCount++;

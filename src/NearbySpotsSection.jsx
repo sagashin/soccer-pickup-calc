@@ -1,15 +1,11 @@
 import React from 'react';
 import {
-  Car,
-  ShoppingBag,
   Navigation,
   ExternalLink,
   MapPin,
   RotateCcw,
   Sparkles,
   Info,
-  Clock,
-  Layers,
 } from 'lucide-react';
 import { getExternalSpotSearchUrls } from './nearbySpots';
 
@@ -208,7 +204,7 @@ export default function NearbySpotsSection({
       ) : displayedSpots.length === 0 ? (
         <div className="py-6 px-3 bg-slate-50 rounded-2xl text-center space-y-2 border border-dashed border-slate-200">
           <p className="text-xs font-bold text-slate-600">
-            周辺1.2km以内に該当スポットが見つかりませんでした
+            周辺1.3km以内に該当スポットが見つかりませんでした
           </p>
           <p className="text-[11px] text-slate-400">
             広域のパーキングやコンビニはGoogleマップ検索から確認できます

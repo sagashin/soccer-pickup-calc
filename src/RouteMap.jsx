@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import L from 'leaflet';
+import 'leaflet/dist/leaflet.css';
 
 // 外部データ（OSMの施設名など）をHTMLに埋め込む前にエスケープする
 function escapeHtml(value) {
@@ -13,34 +14,29 @@ function escapeHtml(value) {
 
 const MAP_LAYERS = [
   {
-    id: 'gmap-traffic',
-    label: 'Google 渋滞状況',
-    url: 'https://mt1.google.com/vt/lyrs=m,traffic&x={x}&y={y}&z={z}&hl=ja',
-    attribution: 'Map data &copy; Google',
+    id: 'osm',
+    label: 'OSM 標準地図',
+    url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+    attribution: '&copy; OpenStreetMap contributors',
   },
   {
-    id: 'gmap-road',
-    label: 'Google 標準',
-    url: 'https://mt1.google.com/vt/lyrs=m&x={x}&y={y}&z={z}&hl=ja',
-    attribution: 'Map data &copy; Google',
+    id: 'gsi',
+    label: '国土地理院地図',
+    url: 'https://cyberjapandata.gsi.go.jp/xyz/std/{z}/{x}/{y}.png',
+    attribution: '国土地理院',
   },
   {
     id: 'railway',
     label: '鉄道・路線図',
     url: 'https://{s}.tiles.openrailwaymap.org/standard/{z}/{x}/{y}.png',
     attribution: '&copy; OpenRailwayMap, OpenStreetMap',
+    baseUrl: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
   },
   {
-    id: 'gmap-hybrid',
-    label: '航空写真',
-    url: 'https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}&hl=ja',
-    attribution: 'Map data &copy; Google',
-  },
-  {
-    id: 'osm',
-    label: 'OSM',
-    url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
-    attribution: '&copy; OpenStreetMap',
+    id: 'gsi-photo',
+    label: '航空写真 (地理院)',
+    url: 'https://cyberjapandata.gsi.go.jp/xyz/seamlessphoto/{z}/{x}/{y}.jpg',
+    attribution: '国土地理院',
   },
 ];
 
@@ -64,14 +60,14 @@ export default function RouteMap({
   const stationsLayerGroupRef = useRef(null);
   const spotMarkersMapRef = useRef(new Map());
 
-  const [activeLayerId, setActiveLayerId] = useState(() => (transportMode === 'train' ? 'gmap-road' : 'gmap-traffic'));
+  const [activeLayerId, setActiveLayerId] = useState(() => (transportMode === 'train' ? 'railway' : 'osm'));
 
   // 移動手段（transportMode）変更時のマップレイヤー自動切替
   useEffect(() => {
-    setActiveLayerId(transportMode === 'train' ? 'gmap-road' : 'gmap-traffic');
+    setActiveLayerId(transportMode === 'train' ? 'railway' : 'osm');
   }, [transportMode]);
 
-  // 初期マップ生成
+  // 初期マップ生成（タイルレイヤーの生成は下の [activeLayerId] useEffect に一本化し二重取得を防止）
   useEffect(() => {
     if (!mapContainerRef.current) return;
 
@@ -80,12 +76,6 @@ export default function RouteMap({
         zoomControl: true,
         attributionControl: true,
       }).setView([35.65, 139.6], 11);
-
-      const initialLayer = MAP_LAYERS.find((l) => l.id === activeLayerId) || MAP_LAYERS[0];
-      tileLayerRef.current = L.tileLayer(initialLayer.url, {
-        attribution: initialLayer.attribution,
-        maxZoom: 19,
-      }).addTo(mapInstanceRef.current);
 
       routeLayerGroupRef.current = L.layerGroup().addTo(mapInstanceRef.current);
       spotsLayerGroupRef.current = L.layerGroup().addTo(mapInstanceRef.current);
@@ -96,11 +86,12 @@ export default function RouteMap({
       if (mapInstanceRef.current) {
         mapInstanceRef.current.remove();
         mapInstanceRef.current = null;
+        tileLayerRef.current = null;
       }
     };
   }, []);
 
-  // レイヤー切り替え
+  // レイヤー初期化＆切り替え
   useEffect(() => {
     if (!mapInstanceRef.current) return;
     const selected = MAP_LAYERS.find((l) => l.id === activeLayerId) || MAP_LAYERS[0];
@@ -109,10 +100,17 @@ export default function RouteMap({
       mapInstanceRef.current.removeLayer(tileLayerRef.current);
     }
 
-    tileLayerRef.current = L.tileLayer(selected.url, {
-      attribution: selected.attribution,
-      maxZoom: 19,
-    }).addTo(mapInstanceRef.current);
+    if (selected.baseUrl) {
+      tileLayerRef.current = L.layerGroup([
+        L.tileLayer(selected.baseUrl, { attribution: '&copy; OpenStreetMap contributors', maxZoom: 19 }),
+        L.tileLayer(selected.url, { attribution: selected.attribution, maxZoom: 19 }),
+      ]).addTo(mapInstanceRef.current);
+    } else {
+      tileLayerRef.current = L.tileLayer(selected.url, {
+        attribution: selected.attribution,
+        maxZoom: 19,
+      }).addTo(mapInstanceRef.current);
+    }
   }, [activeLayerId]);
 
   // 出発地・目的地ピンとルートポリライン描画
@@ -310,7 +308,7 @@ export default function RouteMap({
           <div style="font-size:11px;color:#475569;margin-bottom:8px;">
             会場まで <strong>約${station.distanceMeters}m</strong> (徒歩約${station.walkMinutes}分)
           </div>
-          <a href="https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(station.name)}&travelmode=transit"
+          <a href="https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(`${station.lat},${station.lon}`)}&travelmode=transit"
              target="_blank" rel="noopener noreferrer"
              style="display:inline-block;width:100%;text-align:center;background:#4f46e5;color:white;padding:5px 8px;border-radius:8px;font-weight:bold;font-size:11px;text-decoration:none;">
             この駅までの乗換案内
@@ -380,20 +378,6 @@ export default function RouteMap({
       <div className="relative w-full h-72 rounded-2xl overflow-hidden border border-slate-200 shadow-inner bg-slate-100">
         <div ref={mapContainerRef} className="w-full h-full" />
       </div>
-
-      {transportMode === 'car' && activeLayerId === 'gmap-traffic' && (
-        <div className="flex items-center justify-center gap-3 text-[10px] font-bold text-slate-500 pt-0.5">
-          <span className="flex items-center gap-1">
-            <span className="w-2.5 h-1.5 rounded-sm bg-emerald-500 inline-block" /> スムーズ
-          </span>
-          <span className="flex items-center gap-1">
-            <span className="w-2.5 h-1.5 rounded-sm bg-amber-500 inline-block" /> やや混雑
-          </span>
-          <span className="flex items-center gap-1">
-            <span className="w-2.5 h-1.5 rounded-sm bg-red-600 inline-block" /> 渋滞
-          </span>
-        </div>
-      )}
 
       {transportMode === 'train' && (
         <div className="flex items-center justify-center gap-3 text-[10px] font-bold text-indigo-700 pt-0.5">

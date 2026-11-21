@@ -3,6 +3,10 @@
  */
 
 import { getVenueDocs, getFitnessRecords, getCoachNotes } from './teamVaultStore.js';
+import { createCloudShareSnapshot } from './firebaseShare.js';
+import { safeGetItem, safeSetItem } from './utils/storage.js';
+import { sanitizeHttpUrl } from './utils/urlUtils.js';
+import { markDeleted, clearDeleted } from './utils/tombstones.js';
 
 export const SCHEDULE_STORAGE_KEY = 'soccer_pickup_schedules_v1';
 
@@ -49,7 +53,7 @@ export const CATEGORY_COLORS = {
  */
 export function getSavedSchedules() {
   try {
-    const raw = localStorage.getItem(SCHEDULE_STORAGE_KEY);
+    const raw = safeGetItem(SCHEDULE_STORAGE_KEY, null);
     if (!raw) return [];
     const list = JSON.parse(raw);
     if (!Array.isArray(list)) return [];
@@ -66,7 +70,7 @@ export function getSavedSchedules() {
 export function saveSchedules(schedules) {
   try {
     const sorted = sortSchedules(schedules);
-    localStorage.setItem(SCHEDULE_STORAGE_KEY, JSON.stringify(sorted));
+    safeSetItem(SCHEDULE_STORAGE_KEY, JSON.stringify(sorted));
     return sorted;
   } catch (err) {
     console.error('Failed to save schedules to localStorage:', err);
@@ -90,17 +94,22 @@ export function sortSchedules(list) {
  */
 export function upsertSchedule(event) {
   const current = getSavedSchedules();
-  const existingIndex = current.findIndex((item) => item.id === event.id);
+  const id = event.id || `evt_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+  const now = Date.now();
+  const existingIndex = current.findIndex((item) => item.id === id);
+
+  clearDeleted('schedules', id);
 
   let updated;
   if (existingIndex >= 0) {
     updated = [...current];
-    updated[existingIndex] = { ...updated[existingIndex], ...event, updatedAt: Date.now() };
+    updated[existingIndex] = { ...updated[existingIndex], ...event, id, updatedAt: now };
   } else {
     const newEvent = {
       ...event,
-      id: event.id || `evt_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-      createdAt: event.createdAt || Date.now(),
+      id,
+      createdAt: event.createdAt || now,
+      updatedAt: now,
     };
     updated = [...current, newEvent];
   }
@@ -108,12 +117,34 @@ export function upsertSchedule(event) {
 }
 
 /**
- * 予定を削除
+ * 予定を削除（トゥームストーン記録付き）
  */
 export function deleteSchedule(eventId) {
+  markDeleted('schedules', eventId);
   const current = getSavedSchedules();
   const updated = current.filter((item) => item.id !== eventId);
   return saveSchedules(updated);
+}
+
+/**
+ * 他端末からのトゥームストーンに基づき削除済み予定を除去
+ */
+export function removeDeletedSchedules(deletedScheduleIds) {
+  if (!deletedScheduleIds || typeof deletedScheduleIds !== 'object') return false;
+  const current = getSavedSchedules();
+  let changed = false;
+  const next = current.filter((item) => {
+    const delTs = deletedScheduleIds[item.id];
+    if (!delTs) return true;
+    const itemTs = item.updatedAt || item.createdAt || 0;
+    if (delTs >= itemTs) {
+      changed = true;
+      return false;
+    }
+    return true;
+  });
+  if (changed) saveSchedules(next);
+  return changed;
 }
 
 /**
@@ -145,19 +176,29 @@ export function mergeImportedEvents(importedEvents, defaultMeetingLeadMinutes = 
       }
     }
 
-    // 重複判定：同一日かつ（タイトル完全一致 ＆ 時刻一致）または（会場一致 ＆ タイトル一致）の場合のみ上書き
-    const matchIndex = updatedList.findIndex((item) => {
-      if (item.dateIso !== imp.dateIso) return false;
-      const itemKo = item.kickoffTime || '';
-      const sameTime = itemKo === kickoff;
-      const sameTitle = item.title && imp.title && item.title.trim() === imp.title.trim();
-      const sameVenue = item.venue && imp.venue && item.venue.trim() === imp.venue.trim();
-      // 同一日かつ（タイトル完全一致 ＆ 時刻一致）または（会場一致 ＆ タイトル一致）の場合のみ上書き
-      return (sameTime && (sameTitle || sameVenue)) || (sameTitle && sameVenue);
-    });
+    // 重複判定：1. ID完全一致 2. 同一日かつ（タイトル一致 & 時刻一致）または（会場一致 & 時刻一致）または（タイトル一致 & 会場一致）
+    let matchIndex = imp.id ? updatedList.findIndex((item) => item.id === imp.id) : -1;
+    if (matchIndex < 0) {
+      matchIndex = updatedList.findIndex((item) => {
+        if (item.dateIso !== imp.dateIso) return false;
+        const itemKo = item.kickoffTime || '';
+        const sameTime = itemKo === kickoff;
+        const sameTitle = item.title && imp.title && item.title.trim() === imp.title.trim();
+        const sameVenue = item.venue && imp.venue && item.venue.trim() === imp.venue.trim();
+        return (sameTime && (sameTitle || sameVenue)) || (sameTitle && sameVenue);
+      });
+    }
 
+    if (matchIndex >= 0) {
+      const existing = updatedList[matchIndex];
+      if (existing.updatedAt && imp.updatedAt && existing.updatedAt > imp.updatedAt) {
+        return; // ローカルの編集の方が新しいため上書きしない
+      }
+    }
+
+    const now = Date.now();
     const normalizedEvent = {
-      id: matchIndex >= 0 ? updatedList[matchIndex].id : `evt_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      id: matchIndex >= 0 ? updatedList[matchIndex].id : (imp.id || `evt_${now}_${Math.random().toString(36).slice(2, 7)}`),
       dateIso: imp.dateIso,
       dateLabel: formattedDateLabel,
       title: imp.title || '試合 / 練習',
@@ -173,8 +214,8 @@ export function mergeImportedEvents(importedEvents, defaultMeetingLeadMinutes = 
         ? `読み取り元: ${imp.rawText}`
         : (imp.notes || (matchIndex >= 0 ? updatedList[matchIndex].notes || '' : '')),
       rawText: imp.rawText || (matchIndex >= 0 ? updatedList[matchIndex].rawText || '' : ''),
-      createdAt: matchIndex >= 0 ? updatedList[matchIndex].createdAt : Date.now(),
-      updatedAt: Date.now(),
+      createdAt: matchIndex >= 0 ? updatedList[matchIndex].createdAt : (imp.createdAt || now),
+      updatedAt: Math.max(matchIndex >= 0 ? (updatedList[matchIndex].updatedAt || 0) : 0, imp.updatedAt || now),
     };
 
     if (matchIndex >= 0) {
@@ -207,13 +248,26 @@ export function calculateMeetingTimeFromKickoff(timeStr, leadMinutes = 120) {
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
 }
 
-function calculateEndHoursStr(startTimeStr, durationHours = 4) {
-  const [hh, mm] = (startTimeStr || '09:00').split(':').map(Number);
-  const startMin = (hh || 9) * 60 + (mm || 0);
+export function calculateEndHoursStr(startTimeStr, durationHours = 4) {
+  const [hhRaw, mmRaw] = (startTimeStr || '09:00').split(':').map(Number);
+  const hh = Number.isNaN(hhRaw) ? 9 : hhRaw;
+  const mm = Number.isNaN(mmRaw) ? 0 : mmRaw;
+  const startMin = hh * 60 + mm;
   const endMin = Math.min(23 * 60 + 59, startMin + durationHours * 60);
   const outH = String(Math.floor(endMin / 60)).padStart(2, '0');
   const outM = String(endMin % 60).padStart(2, '0');
   return `${outH}${outM}00`;
+}
+
+/**
+ * RFC 5545 iCalendar テキストエスケープ
+ */
+export function escapeIcsText(str) {
+  return String(str ?? '')
+    .replace(/\\/g, '\\\\')
+    .replace(/;/g, '\\;')
+    .replace(/,/g, '\\,')
+    .replace(/\r\n|\r|\n/g, '\\n');
 }
 
 /**
@@ -239,9 +293,10 @@ export function generateGoogleCalendarUrl(event) {
  * スマホ用 .ics (iCalendar) ファイルを生成してダウンロード
  */
 export function exportToIcs(event) {
-  const dateStr = (event.dateIso || '').replace(/-/g, '');
+  const dateStr = (event.dateIso || getLocalDateIso()).replace(/-/g, '');
   const startHours = (event.meetingTime || '09:00').replace(':', '') + '00';
   const endHours = calculateEndHoursStr(event.meetingTime || '09:00', 4);
+  const descRaw = `集合: ${event.meetingTime || ''} / キックオフ: ${event.kickoffTime || ''}\n${event.notes || ''}`;
 
   const icsContent = [
     'BEGIN:VCALENDAR',
@@ -249,33 +304,36 @@ export function exportToIcs(event) {
     'PRODID:-//Soccer Pickup Calc//JA',
     'CALSCALE:GREGORIAN',
     'BEGIN:VEVENT',
-    `UID:${event.id}@soccer-pickup-calc`,
+    `UID:${event.id || Date.now()}@soccer-pickup-calc`,
     `DTSTAMP:${new Date().toISOString().replace(/[-:]/g, '').split('.')[0]}Z`,
-    `DTSTART:${dateStr}T${startHours}`,
-    `DTEND:${dateStr}T${endHours}`,
-    `SUMMARY:⚽ ${event.title}`,
-    `LOCATION:${event.venue || ''}`,
-    `DESCRIPTION:集合: ${event.meetingTime} / キックオフ: ${event.kickoffTime || ''}\\n${event.notes || ''}`,
+    `DTSTART;TZID=Asia/Tokyo:${dateStr}T${startHours}`,
+    `DTEND;TZID=Asia/Tokyo:${dateStr}T${endHours}`,
+    `SUMMARY:${escapeIcsText(`⚽ ${event.title || 'サッカー試合'}`)}`,
+    `LOCATION:${escapeIcsText(event.venue || '')}`,
+    `DESCRIPTION:${escapeIcsText(descRaw)}`,
     'END:VEVENT',
     'END:VCALENDAR',
   ].join('\r\n');
 
+  const safeTitle = String(event.title || 'match').replace(/[\\/:*?"<>|]/g, '_');
   const blob = new Blob([icsContent], { type: 'text/calendar;charset=utf-8' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `${event.dateIso}_${event.title}.ics`;
+  a.download = `${event.dateIso || 'schedule'}_${safeTitle}.ics`;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
 }
 
-// UTF-8文字列をURL安全なBase64URL化（+ / = を使わないためURLエンコード時の%膨張やリダイレクト時の二重エンコード400エラーを防止）
+// UTF-8文字列をURL安全なBase64URL化
 function utf8ToBase64(str) {
-  const b64 = window.btoa(encodeURIComponent(str).replace(/%([0-9A-F]{2})/g, (match, p1) => {
-    return String.fromCharCode('0x' + p1);
-  }));
+  const b64 = globalThis.btoa(
+    encodeURIComponent(str).replace(/%([0-9A-F]{2})/g, (match, p1) => {
+      return String.fromCharCode('0x' + p1);
+    })
+  );
   return b64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 
@@ -285,19 +343,22 @@ function base64ToUtf8(str) {
   while (normalized.length % 4 !== 0) {
     normalized += '=';
   }
-  return decodeURIComponent(Array.prototype.map.call(window.atob(normalized), (c) => {
-    return '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2);
-  }).join(''));
+  return decodeURIComponent(
+    Array.prototype.map
+      .call(globalThis.atob(normalized), (c) => {
+        return '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2);
+      })
+      .join('')
+  );
 }
 
 // 短縮URLのキャッシュ（同一JSONデータの再短縮を避ける）
 const shortUrlCache = new Map();
 
 /**
- * 家族連携用の共有URLを生成（v2全データ一括パック形式対応）
- * 試合日程・会場駐車場資料・体力測定・コーチ助言を超軽量タプル配列化して1本のURLに圧縮
+ * 共有ペイロード（v2タプル形式）を構築
  */
-export function generateFamilyShareUrl(schedulesInput, options = {}) {
+export function buildFamilySharePayload(schedulesInput, options = {}) {
   const defaultOptions = {
     includeSchedules: true,
     includeVenue: true,
@@ -306,7 +367,6 @@ export function generateFamilyShareUrl(schedulesInput, options = {}) {
   };
   const opt = { ...defaultOptions, ...options };
 
-  // 常にLocalStorageの最新データを優先取得（引数がある場合は最新データと照合）
   const latestSaved = getSavedSchedules();
   const schedules = latestSaved.length > 0 ? latestSaved : (schedulesInput || []);
 
@@ -316,9 +376,8 @@ export function generateFamilyShareUrl(schedulesInput, options = {}) {
     const cutoff = new Date();
     cutoff.setDate(cutoff.getDate() - 30);
     const cutoffIso = getLocalDateIso(cutoff);
-    const recentCreatedThreshold = Date.now() - 7 * 24 * 60 * 60 * 1000; // 直近7日以内に追加・編集された予定は日付に関わらず必ず含める
+    const recentCreatedThreshold = Date.now() - 7 * 24 * 60 * 60 * 1000;
 
-    // 1. 今日以降の予定、または直近追加・更新された予定、または過去30日以内の予定を優先順に並べる
     const prioritized = [...schedules]
       .filter((s) => {
         const isRecentlyTouched = (s.updatedAt || s.createdAt || 0) >= recentCreatedThreshold;
@@ -327,17 +386,12 @@ export function generateFamilyShareUrl(schedulesInput, options = {}) {
       .sort((a, b) => {
         const aFuture = (a.dateIso || '') >= todayIso ? 1 : 0;
         const bFuture = (b.dateIso || '') >= todayIso ? 1 : 0;
-        // 未来・当日の予定を過去の予定より優先
         if (aFuture !== bFuture) return bFuture - aFuture;
-        // 直近で追加・編集された予定を優先しつつ日付順にソート
         return (a.dateIso || '').localeCompare(b.dateIso || '');
       })
       .slice(0, 35);
 
-    // もし全件が30日以上前の場合でも、直近追加されたものから最大35件を含める
     const targetList = prioritized.length > 0 ? prioritized : schedules.slice(-35);
-
-    // 日付順に整列してタプル化
     const sortedTarget = sortSchedules(targetList);
 
     sTuples = sortedTarget.map((s) => {
@@ -391,12 +445,15 @@ export function generateFamilyShareUrl(schedulesInput, options = {}) {
       note.category || '個人課題',
       (note.content || '').slice(0, 140),
       (note.actionItems || []).slice(0, 4),
-      (note.links || []).slice(0, 2).map((l) => [l.title || '', l.url || '']),
+      (note.links || [])
+        .slice(0, 2)
+        .map((l) => [l.title || '', sanitizeHttpUrl(l.url)])
+        .filter((l) => l[1]),
     ]);
   }
 
   if (sTuples.length === 0 && vTuples.length === 0 && fTuples.length === 0 && cTuples.length === 0) {
-    return '';
+    return null;
   }
 
   const payload = { v: 2 };
@@ -404,6 +461,15 @@ export function generateFamilyShareUrl(schedulesInput, options = {}) {
   if (vTuples.length > 0) payload.d = vTuples;
   if (fTuples.length > 0) payload.f = fTuples;
   if (cTuples.length > 0) payload.c = cTuples;
+  return payload;
+}
+
+/**
+ * 家族連携用の共有URLを生成（#sync= フォールバック用）
+ */
+export function generateFamilyShareUrl(schedulesInput, options = {}) {
+  const payload = buildFamilySharePayload(schedulesInput, options);
+  if (!payload) return '';
 
   try {
     const json = JSON.stringify(payload);
@@ -417,80 +483,27 @@ export function generateFamilyShareUrl(schedulesInput, options = {}) {
 }
 
 /**
- * URLハッシュまたはパラメータから共有データを解析して復元
- * （v2一括パック形式 {v:2, s, d, f, c} と旧タプル形式/旧オブジェクト形式の双方に完全対応）
+ * デコード済み共有ペイロードオブジェクトを正規化形式に変換（?share= と #sync= 共通）
  */
-export function parseFamilyShareUrl(hashOrQuery) {
-  try {
-    const raw = hashOrQuery || (typeof window !== 'undefined' ? (window.location.hash || window.location.search) : '');
-    const match = raw.match(/[#?&]sync=([^&]+)/);
-    if (!match || !match[1]) return null;
+export function parseSharePayloadObject(parsed) {
+  if (!parsed) return null;
 
-    const base64Str = decodeURIComponent(match[1]);
-    const jsonStr = base64ToUtf8(base64Str);
-    const parsed = JSON.parse(jsonStr);
-
-    if (!parsed) return null;
-
-    const weekdays = ['日', '月', '火', '水', '木', '金', '土'];
-    const formatLabel = (iso) => {
-      if (!iso) return '';
-      const parts = String(iso).split('-').map(Number);
-      if (parts.length === 3 && !isNaN(parts[0]) && !isNaN(parts[1]) && !isNaN(parts[2])) {
-        const dt = new Date(parts[0], parts[1] - 1, parts[2]);
-        return `${parts[1]}月${parts[2]}日(${weekdays[dt.getDay()]})`;
-      }
-      return iso;
-    };
-
-    // 【旧形式】デコード結果が配列の場合（試合日程タプルまたは旧オブジェクトの配列）
-    if (Array.isArray(parsed)) {
-      if (parsed.length === 0) return null;
-      const schedules = parsed.map((item) => {
-        if (Array.isArray(item)) {
-          const [d, c, m, k, v, t, n] = item;
-          return {
-            dateIso: d,
-            dateLabel: formatLabel(d),
-            category: c || '公式戦',
-            meetingTime: m || '09:00',
-            kickoffTime: k || '',
-            isKickoff: Boolean(k),
-            venue: v || '',
-            title: t || 'サッカー試合',
-            notes: n || '',
-          };
-        } else {
-          return {
-            dateIso: item.d,
-            dateLabel: formatLabel(item.d),
-            title: item.t,
-            category: item.c || '公式戦',
-            meetingTime: item.m,
-            kickoffTime: item.k,
-            isKickoff: Boolean(item.k),
-            venue: item.v,
-            notes: item.n,
-          };
-        }
-      });
-      // 後方互換性のため配列自身にプロパティを付与して返却
-      schedules.schedules = schedules;
-      schedules.venueDocs = [];
-      schedules.fitnessRecords = [];
-      schedules.coachNotes = [];
-      schedules.totalCount = schedules.length;
-      return schedules;
+  const weekdays = ['日', '月', '火', '水', '木', '金', '土'];
+  const formatLabel = (iso) => {
+    if (!iso) return '';
+    const parts = String(iso).split('-').map(Number);
+    if (parts.length === 3 && !isNaN(parts[0]) && !isNaN(parts[1]) && !isNaN(parts[2])) {
+      const dt = new Date(parts[0], parts[1] - 1, parts[2]);
+      return `${parts[1]}月${parts[2]}日(${weekdays[dt.getDay()]})`;
     }
+    return iso;
+  };
 
-    // 【新v2形式】デコード結果がオブジェクトの場合
-    if (typeof parsed === 'object') {
-      const sList = Array.isArray(parsed.s) ? parsed.s : [];
-      const dList = Array.isArray(parsed.d) ? parsed.d : (Array.isArray(parsed.v) ? parsed.v : []);
-      const fList = Array.isArray(parsed.f) ? parsed.f : [];
-      const cList = Array.isArray(parsed.c) ? parsed.c : [];
-
-      const schedules = sList.map((item) => {
+  // 【旧形式】デコード結果が配列の場合
+  if (Array.isArray(parsed)) {
+    if (parsed.length === 0) return null;
+    const schedules = parsed.map((item) => {
+      if (Array.isArray(item)) {
         const [d, c, m, k, v, t, n] = item;
         return {
           dateIso: d,
@@ -503,60 +516,125 @@ export function parseFamilyShareUrl(hashOrQuery) {
           title: t || 'サッカー試合',
           notes: n || '',
         };
-      });
-
-      const venueDocs = dList.map((item) => {
-        const [title, venueName, docType, summary, parkingRules, cautions, dateIso] = item;
+      } else {
         return {
-          title: title || '',
-          venueName: venueName || '',
-          docType: docType || '駐車場ルール',
-          summary: summary || '',
-          parkingRules: parkingRules || '',
-          cautions: Array.isArray(cautions) ? cautions : [],
-          dateIso: dateIso || getLocalDateIso(),
+          dateIso: item.d,
+          dateLabel: formatLabel(item.d),
+          title: item.t,
+          category: item.c || '公式戦',
+          meetingTime: item.m,
+          kickoffTime: item.k,
+          isKickoff: Boolean(item.k),
+          venue: item.v,
+          notes: item.n,
         };
-      });
+      }
+    });
+    schedules.schedules = schedules;
+    schedules.venueDocs = [];
+    schedules.fitnessRecords = [];
+    schedules.coachNotes = [];
+    schedules.totalCount = schedules.length;
+    return schedules;
+  }
 
-      const fitnessRecords = fList.map((item) => {
-        const [dateIso, eventName, value, unit, category, notes] = item;
-        return {
-          dateIso: dateIso || getLocalDateIso(),
-          eventName: eventName || '',
-          value: typeof value === 'number' ? value : parseFloat(value) || 0,
-          unit: unit || '秒',
-          category: category || 'スピード',
-          notes: notes || '',
-        };
-      });
+  // 【新v2形式】デコード結果がオブジェクトの場合
+  if (typeof parsed === 'object') {
+    const sList = Array.isArray(parsed.s) ? parsed.s : [];
+    const dList = Array.isArray(parsed.d) ? parsed.d : (Array.isArray(parsed.v) ? parsed.v : []);
+    const fList = Array.isArray(parsed.f) ? parsed.f : [];
+    const cList = Array.isArray(parsed.c) ? parsed.c : [];
 
-      const coachNotes = cList.map((item) => {
-        const [dateIso, title, category, content, actionItems, links] = item;
-        return {
-          dateIso: dateIso || getLocalDateIso(),
-          title: title || '',
-          category: category || '個人課題',
-          content: content || '',
-          actionItems: Array.isArray(actionItems) ? actionItems : [],
-          links: Array.isArray(links)
-            ? links.map((l) => (Array.isArray(l) ? { title: l[0], url: l[1] } : l))
-            : [],
-        };
-      });
-
-      const totalCount = schedules.length + venueDocs.length + fitnessRecords.length + coachNotes.length;
-
+    const schedules = sList.map((item) => {
+      const [d, c, m, k, v, t, n] = item;
       return {
-        v: 2,
-        schedules,
-        venueDocs,
-        fitnessRecords,
-        coachNotes,
-        totalCount,
+        dateIso: d,
+        dateLabel: formatLabel(d),
+        category: c || '公式戦',
+        meetingTime: m || '09:00',
+        kickoffTime: k || '',
+        isKickoff: Boolean(k),
+        venue: v || '',
+        title: t || 'サッカー試合',
+        notes: n || '',
       };
-    }
+    });
 
-    return null;
+    const venueDocs = dList.map((item) => {
+      const [title, venueName, docType, summary, parkingRules, cautions, dateIso] = item;
+      return {
+        title: title || '',
+        venueName: venueName || '',
+        docType: docType || '駐車場ルール',
+        summary: summary || '',
+        parkingRules: parkingRules || '',
+        cautions: Array.isArray(cautions) ? cautions : [],
+        dateIso: dateIso || getLocalDateIso(),
+      };
+    });
+
+    const fitnessRecords = fList.map((item) => {
+      const [dateIso, eventName, value, unit, category, notes] = item;
+      return {
+        dateIso: dateIso || getLocalDateIso(),
+        eventName: eventName || '',
+        value: typeof value === 'number' ? value : parseFloat(value) || 0,
+        unit: unit || '秒',
+        category: category || 'スピード',
+        notes: notes || '',
+      };
+    });
+
+    const coachNotes = cList.map((item) => {
+      const [dateIso, title, category, content, actionItems, links] = item;
+      const safeLinks = Array.isArray(links)
+        ? links
+            .map((l) => {
+              const titleStr = Array.isArray(l) ? l[0] : l?.title;
+              const urlStr = Array.isArray(l) ? l[1] : l?.url;
+              const safeUrl = sanitizeHttpUrl(urlStr);
+              return safeUrl ? { title: titleStr || safeUrl, url: safeUrl } : null;
+            })
+            .filter(Boolean)
+        : [];
+      return {
+        dateIso: dateIso || getLocalDateIso(),
+        title: title || '',
+        category: category || '個人課題',
+        content: content || '',
+        actionItems: Array.isArray(actionItems) ? actionItems : [],
+        links: safeLinks,
+      };
+    });
+
+    const totalCount = schedules.length + venueDocs.length + fitnessRecords.length + coachNotes.length;
+
+    return {
+      v: 2,
+      schedules,
+      venueDocs,
+      fitnessRecords,
+      coachNotes,
+      totalCount,
+    };
+  }
+
+  return null;
+}
+
+/**
+ * URLハッシュまたはパラメータから共有データを解析して復元
+ */
+export function parseFamilyShareUrl(hashOrQuery) {
+  try {
+    const raw = hashOrQuery || (typeof window !== 'undefined' ? (window.location.hash || window.location.search) : '');
+    const match = raw.match(/[#?&]sync=([^&]+)/);
+    if (!match || !match[1]) return null;
+
+    const base64Str = decodeURIComponent(match[1]);
+    const jsonStr = base64ToUtf8(base64Str);
+    const parsed = JSON.parse(jsonStr);
+    return parseSharePayloadObject(parsed);
   } catch (err) {
     console.error('Failed to parse family share url:', err);
     return null;
@@ -597,82 +675,28 @@ export function createLineShareUrl(shareUrl, summaryInfo) {
 }
 
 /**
- * 短縮URLを取得（POSTリクエスト & 直接リダイレクト型プロバイダでLINE内400エラーを完全防止）
+ * 短縮共有URLを取得（外部URL短縮サービスを使わず、自前Firestoreスナップショットで安全な ?share= URLを生成）
  */
 export async function getShortFamilyShareUrl(schedules, options = {}) {
-  const longUrl = generateFamilyShareUrl(schedules, options);
-  if (!longUrl) return '';
+  const payload = buildFamilySharePayload(schedules, options);
+  if (!payload) return '';
 
-  // すでにキャッシュがあれば即座に返却
-  if (shortUrlCache.has(longUrl)) {
-    return shortUrlCache.get(longUrl);
+  const cacheKey = JSON.stringify(payload);
+  if (shortUrlCache.has(cacheKey)) {
+    return shortUrlCache.get(cacheKey);
   }
 
-  // 1. 自前バックエンドAPI (/api/shorten) を POST で呼び出し（URL長制限を回避）
   try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 5000);
-    const res = await fetch('/api/shorten', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url: longUrl }),
-      signal: controller.signal,
-    });
-    clearTimeout(timeoutId);
-
-    if (res.ok) {
-      const data = await res.json();
-      if (data.shortUrl && data.shortUrl.startsWith('http') && !data.fallback) {
-        shortUrlCache.set(longUrl, data.shortUrl);
-        return data.shortUrl;
-      }
+    const shareUrl = await createCloudShareSnapshot(payload);
+    if (shareUrl && shareUrl.startsWith('http')) {
+      shortUrlCache.set(cacheKey, shareUrl);
+      return shareUrl;
     }
   } catch (err) {
-    console.warn('POST /api/shorten failed, trying client-side fallback:', err?.message || err);
+    console.warn('Cloud share snapshot failed, falling back to hash share URL:', err?.message || err);
   }
 
-  // 2. クライアント側から直接 da.gd API を試行（CORS対応・Viglinkを経由せず直接302転送されるため400エラーにならない）
-  try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 5000);
-    const dagdRes = await fetch(
-      `https://da.gd/s?url=${encodeURIComponent(longUrl)}`,
-      { signal: controller.signal }
-    );
-    clearTimeout(timeoutId);
-
-    if (dagdRes.ok) {
-      const short = (await dagdRes.text()).trim();
-      if (short.startsWith('https://da.gd/')) {
-        shortUrlCache.set(longUrl, short);
-        return short;
-      }
-    }
-  } catch (_) {}
-
-  // 3. クライアント側から直接 TinyURL API を試行（2,500文字以内の安全な長さの場合のみ）
-  if (longUrl.length <= 2500) {
-    try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 5000);
-      const tinyRes = await fetch(
-        `https://tinyurl.com/api-create.php?url=${encodeURIComponent(longUrl)}`,
-        { signal: controller.signal }
-      );
-      clearTimeout(timeoutId);
-
-      if (tinyRes.ok) {
-        const short = (await tinyRes.text()).trim();
-        if (short.startsWith('http')) {
-          shortUrlCache.set(longUrl, short);
-          return short;
-        }
-      }
-    } catch (_) {}
-  }
-
-  // すべて失敗した場合は軽量化された元のURLを返却
-  return longUrl;
+  return generateFamilyShareUrl(schedules, options);
 }
 
 

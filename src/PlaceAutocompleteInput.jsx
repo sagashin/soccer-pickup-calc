@@ -164,6 +164,7 @@ export default function PlaceAutocompleteInput({
   const [searching, setSearching] = useState(false);
   const containerRef = useRef(null);
   const skipNextFetchRef = useRef(false);
+  const selectRequestIdRef = useRef(0);
 
   // 外側タップで候補リストを閉じる
   useEffect(() => {
@@ -199,13 +200,17 @@ export default function PlaceAutocompleteInput({
     const timer = setTimeout(async () => {
       try {
         const list = await fetchPlaceSuggestions(trimmed, controller.signal);
+        if (controller.signal.aborted) return;
         setSuggestions(list);
       } catch (err) {
+        if (controller.signal.aborted) return;
         if (err.name !== 'AbortError') {
           setSuggestions([]);
         }
       } finally {
-        setSearching(false);
+        if (!controller.signal.aborted) {
+          setSearching(false);
+        }
       }
     }, 260);
 
@@ -221,27 +226,36 @@ export default function PlaceAutocompleteInput({
   };
 
   const handleSelect = async (item) => {
+    const reqId = ++selectRequestIdRef.current;
     skipNextFetchRef.current = true;
     setIsOpen(false);
     setSuggestions([]);
 
-    let selectedCoords = item.lat && item.lon ? { lat: item.lat, lon: item.lon } : null;
+    let selectedCoords =
+      item.lat != null && item.lon != null ? { lat: item.lat, lon: item.lon } : null;
 
     // Google Places候補でplaceIdがある場合、詳細座標を取得
-    if (item.placeId && (!selectedCoords || !selectedCoords.lat)) {
+    if (item.placeId && !selectedCoords) {
       try {
         const gmapsKey = getSavedGoogleMapsApiKey();
         const details = await getCoordsByPlaceId(item.placeId, gmapsKey);
-        selectedCoords = { lat: details.lat, lon: details.lon };
+        if (reqId !== selectRequestIdRef.current) return;
+        if (details?.lat != null && details?.lon != null) {
+          selectedCoords = { lat: details.lat, lon: details.lon };
+        }
       } catch (e) {
         console.warn('Place details fetch failed:', e);
       }
     }
 
+    if (reqId !== selectRequestIdRef.current) return;
+
     if (onSelectSuggestion) {
       onSelectSuggestion({
         title: item.title,
         fullQuery: item.fullQuery || item.title,
+        lat: selectedCoords?.lat ?? null,
+        lon: selectedCoords?.lon ?? null,
         coords: selectedCoords,
       });
     } else {
@@ -291,7 +305,7 @@ export default function PlaceAutocompleteInput({
 
       {/* サジェストドロップダウン */}
       {isOpen && (suggestions.length > 0 || searching) && (
-        <div className="absolute left-0 right-0 top-full mt-1.5 bg-white rounded-xl shadow-xl border border-slate-200/90 z-50 overflow-hidden divide-y divide-slate-100 animate-in fade-in zoom-in-95 duration-100">
+        <div className="absolute left-0 right-0 top-full mt-1.5 bg-white rounded-xl shadow-xl border border-slate-200/90 z-50 overflow-hidden divide-y divide-slate-100">
           <div className="px-3 py-1.5 bg-slate-50/80 text-[11px] font-medium text-slate-500 flex items-center justify-between">
             <span className="flex items-center gap-1">
               <MapPin className="w-3 h-3 text-emerald-600" />

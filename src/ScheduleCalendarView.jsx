@@ -14,7 +14,6 @@ import {
   Camera,
   CalendarCheck,
   CheckCircle2,
-  AlertCircle,
   Download,
   Share2,
   X,
@@ -24,7 +23,6 @@ import {
 import {
   CATEGORY_COLORS,
   getSavedSchedules,
-  saveSchedules,
   upsertSchedule,
   deleteSchedule,
   generateGoogleCalendarUrl,
@@ -39,6 +37,7 @@ import {
 import { SAMPLE_SCHEDULE_EVENTS } from './geminiScheduleParser';
 import { useEventWeather } from './weatherService';
 import { calculateFastEstimateDeparture, saveCachedCoords } from './geoUtils';
+import { safeGetItem } from './utils/storage';
 import PlaceAutocompleteInput from './PlaceAutocompleteInput';
 
 const WEEKDAYS = ['日', '月', '火', '水', '木', '金', '土'];
@@ -227,11 +226,18 @@ export default function ScheduleCalendarView({
     }
   };
 
-  // 再読み込み
-  const reloadSchedules = useCallback(() => {
-    setSchedules(getSavedSchedules());
-    onSchedulesChange?.();
-  }, [onSchedulesChange]);
+  // モーダルのEscapeキーで閉じる対応
+  useEffect(() => {
+    if (!isModalOpen && !isShareModalOpen) return;
+    const onKeyDown = (e) => {
+      if (e.key === 'Escape') {
+        if (isModalOpen) setIsModalOpen(false);
+        if (isShareModalOpen) setIsShareModalOpen(false);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [isModalOpen, isShareModalOpen]);
 
   // サンプルデータを一括登録
   const handleLoadSamples = () => {
@@ -745,7 +751,14 @@ export default function ScheduleCalendarView({
 
       {/* ✏️ 手動追加・編集モーダル */}
       {isModalOpen && (
-        <div className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
+        <div
+          role="dialog"
+          aria-modal="true"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setIsModalOpen(false);
+          }}
+          className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto"
+        >
           <div className="bg-white rounded-3xl max-w-md w-full p-5 shadow-2xl border border-slate-200 space-y-4">
             <div className="flex items-center justify-between">
               <h3 className="text-base font-black text-slate-900 flex items-center gap-2">
@@ -862,8 +875,10 @@ export default function ScheduleCalendarView({
                   onSelectSuggestion={(item) => {
                     const venueName = item.title || item.fullQuery;
                     setFormData({ ...formData, venue: venueName });
-                    if (item.lat && item.lon) {
-                      saveCachedCoords(venueName, { lat: item.lat, lon: item.lon });
+                    const lat = item.lat ?? item.coords?.lat;
+                    const lon = item.lon ?? item.coords?.lon;
+                    if (lat != null && lon != null) {
+                      saveCachedCoords(venueName, { lat, lon });
                     }
                   }}
                   placeholder="例: つくばFC T-Field / 羽生中央公園"
@@ -908,7 +923,14 @@ export default function ScheduleCalendarView({
 
       {/* 👨‍👩‍👦 家族共有モーダル */}
       {isShareModalOpen && (
-        <div className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-sm flex items-center justify-center p-4">
+        <div
+          role="dialog"
+          aria-modal="true"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setIsShareModalOpen(false);
+          }}
+          className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-sm flex items-center justify-center p-4"
+        >
           <div className="bg-white rounded-3xl max-w-sm w-full p-5 shadow-2xl border border-slate-200 space-y-4">
             <div className="flex items-center justify-between">
               <h3 className="text-base font-black text-slate-900 flex items-center gap-2">
@@ -1007,11 +1029,7 @@ function ScheduleCard({ event, onSelectForCalculation, onEdit, onDelete }) {
 
   // ユーザーの登録出発地（自宅など）
   const userOrigin = useMemo(() => {
-    try {
-      return localStorage.getItem('soccer_pickup_origin_v1') || '';
-    } catch (_) {
-      return '';
-    }
+    return safeGetItem('soccer_pickup_origin_v1', '') || '';
   }, []);
 
   // 公式戦の場合の2時間30分前到着前提の出発時間（仮）を計算（外部通信ゼロ・ミリ秒算出）
@@ -1096,8 +1114,8 @@ function ScheduleCard({ event, onSelectForCalculation, onEdit, onDelete }) {
                 }`}
                 title={
                   departureEstimate.hasOriginCoords
-                    ? `【出発時間(仮)の目安】\n・キックオフの2時間30分前(${departureEstimate.targetArrival})に現地到着想定\n・自宅(${userOrigin})から移動+バッファ(計約${departureEstimate.durationMin}分)を逆算\n※右側の「出発時間を計算」を押すと最新の渋滞考慮ルートが計算されます。`
-                    : `【到着目安】\n・キックオフの2時間30分前(${departureEstimate.targetArrival})に現地到着想定\n※「逆算ナビ」で出発地を設定すると、自宅からの所要時間を自動逆算します。`
+                    ? `【出発時間(仮)の目安】\n・${departureEstimate.reasonText}（${departureEstimate.targetArrival}）に現地到着想定\n・自宅(${userOrigin})から移動+バッファ(計約${departureEstimate.durationMin}分)を逆算\n※右側の「出発時間を計算」を押すと最新の渋滞考慮ルートが計算されます。`
+                    : `【到着目安】\n・${departureEstimate.reasonText}（${departureEstimate.targetArrival}）に現地到着想定\n※「逆算ナビ」で出発地を設定すると、自宅からの所要時間を自動逆算します。`
                 }
               >
                 <Car

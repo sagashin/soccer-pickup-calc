@@ -1,10 +1,12 @@
 import { getSavedGoogleMapsApiKey, geocodeWithGoogleMaps } from './googleMapsClient.js';
+import { safeGetItem, safeSetItem } from './utils/storage.js';
 
 /**
  * 地理・ジオコーディング・キャッシュユーティリティ
  */
 
-const GEOCODE_CACHE_KEY = 'soccer_pickup_geocode_cache_v1';
+const GEOCODE_CACHE_KEY = 'soccer_pickup_geocode_cache_v2';
+const GEOCODE_CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30日
 const memoryCache = new Map();
 
 /**
@@ -13,7 +15,7 @@ const memoryCache = new Map();
  */
 export const KNOWN_SOCCER_VENUES = [
   {
-    keywords: ['流通経済大学付属柏', '流経大柏', '流通経済大柏', '流経柏', '流通経済大学付属柏高校', '流通経済大学付属柏高等学校', '流経'],
+    keywords: ['流通経済大学付属柏', '流経大柏', '流通経済大柏', '流経柏', '流通経済大学付属柏高校', '流通経済大学付属柏高等学校'],
     lat: 35.9072516,
     lon: 139.9264238,
     displayName: '流通経済大学付属柏高等学校 グラウンド (千葉県柏市)',
@@ -31,7 +33,7 @@ export const KNOWN_SOCCER_VENUES = [
     displayName: '市立船橋高等学校 (千葉県船橋市)',
   },
   {
-    keywords: ['西武台第2', '西武台高校 第2', '西武台高校第2', '西武台高校第２', '西武台第2グラウンド', '西武台第２グラウンド', '西武台高校', '西武台'],
+    keywords: ['西武台第2', '西武台高校 第2', '西武台高校第2', '西武台高校第２', '西武台第2グラウンド', '西武台第２グラウンド', '西武台高校', '西武台高等学校', '西武台高校グラウンド'],
     lat: 35.808865,
     lon: 139.546066,
     displayName: '西武台高校 第2グラウンド (埼玉県新座市大和田)',
@@ -43,19 +45,19 @@ export const KNOWN_SOCCER_VENUES = [
     displayName: 'ZOZOPARK HONDA FOOTBALL STADIUM (千葉県千葉市美浜区)',
   },
   {
-    keywords: ['ゼットエーオリプリ', 'ゼットエー', 'ゼットエーオリプリスタジアム', 'オリプリ'],
+    keywords: ['ゼットエーオリプリ', 'ゼットエーオリプリスタジアム', 'オリプリスタジアム'],
     lat: 35.527843,
     lon: 140.071472,
     displayName: 'ゼットエーオリプリスタジアム (千葉県市原市)',
   },
   {
-    keywords: ['市原スポレクパーク', 'スポレクパーク', '市原スポレク', 'スポレク'],
+    keywords: ['市原スポレクパーク', 'スポレクパーク', '市原スポレク'],
     lat: 35.538357,
     lon: 140.133987,
     displayName: '市原スポレクパーク (千葉県市原市菊間)',
   },
   {
-    keywords: ['第一カッターフィールド', '秋津サッカー場', '第一カッター', '秋津総合運動公園'],
+    keywords: ['第一カッターフィールド', '秋津サッカー場', '秋津総合運動公園'],
     lat: 35.669724,
     lon: 140.012436,
     displayName: '第一カッターフィールド / 秋津サッカー場 (千葉県習志野市)',
@@ -73,7 +75,7 @@ export const KNOWN_SOCCER_VENUES = [
     displayName: '三協フロンテア柏スタジアム (千葉県柏市日立台)',
   },
   {
-    keywords: ['中央学院高校', '中央学院高等学校', '中央学院'],
+    keywords: ['中央学院高校', '中央学院高等学校'],
     lat: 35.864315,
     lon: 140.059662,
     displayName: '中央学院高等学校 (千葉県我孫子市都部)',
@@ -109,19 +111,19 @@ export const KNOWN_SOCCER_VENUES = [
     displayName: '専修大学松戸高等学校 (千葉県松戸市上本郷)',
   },
   {
-    keywords: ['昌平高校', '昌平高等学校', '昌平'],
+    keywords: ['昌平高校', '昌平高等学校'],
     lat: 36.057735,
     lon: 139.70134,
     displayName: '昌平高等学校 (埼玉県杉戸町下野)',
   },
   {
-    keywords: ['武南高校', '武南高等学校', '武南'],
+    keywords: ['武南高校', '武南高等学校'],
     lat: 35.823086,
     lon: 139.704941,
     displayName: '武南高等学校 (埼玉県蕨市塚越)',
   },
   {
-    keywords: ['浦和東高校', '浦和東高等学校', '浦和東'],
+    keywords: ['浦和東高校', '浦和東高等学校'],
     lat: 35.906208,
     lon: 139.708603,
     displayName: '浦和東高等学校 (埼玉県さいたま市緑区寺山)',
@@ -133,7 +135,7 @@ export const KNOWN_SOCCER_VENUES = [
     displayName: '成立学園鷲宮グラウンド (埼玉県久喜市八甫)',
   },
   {
-    keywords: ['帝京高校', '帝京高等学校', '帝京高校グラウンド', '帝京'],
+    keywords: ['帝京高校', '帝京高等学校', '帝京高校グラウンド'],
     lat: 35.753227,
     lon: 139.716522,
     displayName: '帝京高等学校 (東京都板橋区加賀)',
@@ -145,19 +147,19 @@ export const KNOWN_SOCCER_VENUES = [
     displayName: '千葉県立幕張総合高等学校 (千葉県千葉市美浜区若葉)',
   },
   {
-    keywords: ['敬愛学園高校', '敬愛学園', '敬愛学園高等学校'],
+    keywords: ['敬愛学園高校', '敬愛学園高等学校'],
     lat: 35.6322,
     lon: 140.1066,
     displayName: '敬愛学園高等学校 (千葉県千葉市稲毛区)',
   },
   {
-    keywords: ['千葉明徳高校', '千葉明徳', '千葉明徳高等学校'],
+    keywords: ['千葉明徳高校', '千葉明徳高等学校'],
     lat: 35.5675,
     lon: 140.1581,
     displayName: '千葉明徳高等学校 (千葉県千葉市中央区)',
   },
   {
-    keywords: ['翔凜高校', '翔凜', '翔凜高等学校'],
+    keywords: ['翔凜高校', '翔凜高等学校'],
     lat: 35.2952,
     lon: 139.9234,
     displayName: '翔凜高等学校 (千葉県君津市)',
@@ -169,7 +171,7 @@ export const KNOWN_SOCCER_VENUES = [
     displayName: '東京学館浦安高等学校 (千葉県浦安市日の出)',
   },
   {
-    keywords: ['八千代東高校', '八千代東高等学校', '八千代東'],
+    keywords: ['八千代東高校', '八千代東高等学校'],
     lat: 35.7337,
     lon: 140.1192,
     displayName: '千葉県立八千代東高等学校 (千葉県八千代市)',
@@ -211,7 +213,7 @@ export const KNOWN_SOCCER_VENUES = [
     displayName: '市原緑地運動公園臨海競技場 (千葉県市原市岩崎)',
   },
   {
-    keywords: ['姉崎公園サッカー場', '姉崎サッカー場', '姉崎公園'],
+    keywords: ['姉崎公園サッカー場', '姉崎サッカー場'],
     lat: 35.489086,
     lon: 140.043304,
     displayName: '姉崎公園サッカー場 (千葉県市原市姉崎海岸)',
@@ -235,7 +237,7 @@ export const KNOWN_SOCCER_VENUES = [
     displayName: '羽生市中央公園 (埼玉県羽生市)',
   },
   {
-    keywords: ['j-foot浦和美園', '浦和美園', 'ジェイフット'],
+    keywords: ['j-foot浦和美園', 'j-foot', 'ジェイフット浦和美園', 'ジェイフット'],
     lat: 35.90556,
     lon: 139.73056,
     displayName: 'J-foot浦和美園 (埼玉県さいたま市緑区)',
@@ -255,36 +257,29 @@ export const KNOWN_SOCCER_VENUES = [
 ];
 
 /**
- * 入力文字列に対応するビルトイン会場を検索（単一）
+ * 入力文字列に対応するビルトイン会場を検索（単一・厳格一致：q.includes(kw) のみ）
+ * ※ "東京" や "浦和美園駅" などの一般的な地名・駅名が関係ない学校に化ける誤爆を防止
  */
 export function findKnownVenue(query) {
   if (!query || typeof query !== 'string') return null;
-  const q = query.trim().toLowerCase().replace(/[\s\u3000]+/g, '');
+  const trimmed = query.trim();
+  const q = trimmed.toLowerCase().replace(/[\s\u3000]+/g, '');
   if (q.length < 2) return null;
+
+  // 「〜駅」などの駅名指定はビルトイン高校・スタジアム辞書で上書きしない
+  if (/駅$/.test(q)) return null;
 
   for (const venue of KNOWN_SOCCER_VENUES) {
     for (const kw of venue.keywords) {
       const cleanKw = kw.toLowerCase().replace(/[\s\u3000]+/g, '');
-      if (cleanKw.length <= 2) {
-        if (q.includes(cleanKw)) {
-          return {
-            lat: venue.lat,
-            lon: venue.lon,
-            displayName: venue.displayName,
-            candidates: [],
-            source: 'builtin',
-          };
-        }
-      } else {
-        if (q.includes(cleanKw) || cleanKw.includes(q)) {
-          return {
-            lat: venue.lat,
-            lon: venue.lon,
-            displayName: venue.displayName,
-            candidates: [],
-            source: 'builtin',
-          };
-        }
+      if (q.includes(cleanKw)) {
+        return {
+          lat: venue.lat,
+          lon: venue.lon,
+          displayName: venue.displayName,
+          candidates: [],
+          source: 'builtin',
+        };
       }
     }
   }
@@ -292,12 +287,13 @@ export function findKnownVenue(query) {
 }
 
 /**
- * オートコンプリート用: 入力文字列にマッチするビルトイン会場を複数検索
+ * オートコンプリート用: 入力文字列にマッチするビルトイン会場を複数検索（部分入力対応）
  */
 export function findKnownVenues(query, limit = 4) {
   if (!query || typeof query !== 'string') return [];
   const q = query.trim().toLowerCase().replace(/[\s\u3000]+/g, '');
   if (q.length < 2) return [];
+  if (/駅$/.test(q)) return [];
 
   const matched = [];
   const seenNames = new Set();
@@ -308,16 +304,9 @@ export function findKnownVenues(query, limit = 4) {
 
     for (const kw of venue.keywords) {
       const cleanKw = kw.toLowerCase().replace(/[\s\u3000]+/g, '');
-      if (cleanKw.length <= 2) {
-        if (q.includes(cleanKw) || cleanKw.includes(q)) {
-          isHit = true;
-          break;
-        }
-      } else {
-        if (q.includes(cleanKw) || cleanKw.includes(q)) {
-          isHit = true;
-          break;
-        }
+      if (q.includes(cleanKw) || cleanKw.includes(q)) {
+        isHit = true;
+        break;
       }
     }
 
@@ -339,7 +328,7 @@ export function findKnownVenues(query, limit = 4) {
 /**
  * 国土地理院（GSI）の検索結果がクエリと妥当に一致しているか厳格チェック
  * ※「流通経済大学付属柏高校」に対して「北海道千歳市流通」がヒットするような
- *   前方2文字の誤爆住所を完全に遮断
+ *   前方2文字の誤爆住所や駅名への誤爆を完全に遮断
  */
 export function isGsiMatchValid(query, title) {
   if (!query || !title) return false;
@@ -353,35 +342,50 @@ export function isGsiMatchValid(query, title) {
   const localPart = t.replace(/^(北海道|.+?[都府県])/, '');
   if (!localPart || localPart.length < 2) return false;
 
-  // 1. クエリが市区町村・町域を含んでいるか、または住所がクエリを含んでいるか
-  if (q.includes(localPart)) return true;
-  if (t.includes(q)) return true;
+  const isStationQuery = /駅$/.test(q);
+  const isFacilityQuery =
+    /(高校|高等学校|大学|中学|小学校|学園|グラウンド|グランド|サッカー|公園|スタジアム|アリーナ|フィールド|コート|fc|sc)/i.test(
+      q
+    );
+  const isFacilityOrStation = isStationQuery || isFacilityQuery;
 
-  // 2. 市区町村名単位でチェック（例: "柏市", "船橋市", "千歳市"）
+  // 1. クエリが市区町村・町域を含んでいるか
+  if (q.includes(localPart)) return true;
+
+  // 2. 市区町村名単位でチェック（例: "柏市", "船橋市", "さいたま市"）
   const cityMatch = t.match(/^(?:北海道|.+?[都府県])?([^0-9\s]+?[市区町村])/);
   if (cityMatch && cityMatch[1] && cityMatch[1].length >= 2) {
-    const city = cityMatch[1];
-    // クエリにその市区町村名が含まれていればOK
-    if (q.includes(city)) return true;
+    if (q.includes(cityMatch[1])) return true;
   }
 
-  // 3. クエリが施設名（高校、大学、グラウンドなど）の場合、市区町村すら一致しなければ除外
-  const isFacilityName = /(高校|高等学校|大学|中学|学園|グラウンド|グランド|サッカー|公園|スタジアム|アリーナ|fc)/i.test(q);
-  if (isFacilityName) {
-    return false;
+  // 3. 施設名や駅名ではない純粋な住所検索で、3文字以上一致する場合のみ部分一致を許可
+  if (!isFacilityOrStation && q.length >= 3 && t.includes(q)) {
+    return true;
   }
 
   return false;
 }
 
 /**
- * サッカー施設・学校グラウンドの優先度スコアリング
+ * サッカー施設・学校グラウンド（または駅クエリ時の駅）の優先度スコアリング
  */
-export function getSoccerRelevanceScore(name, category, type) {
+export function getSoccerRelevanceScore(name, category, type, { isStationQuery = false } = {}) {
   let s = 0;
   const n = (name || '').toLowerCase();
   const c = category || '';
   const t = type || '';
+
+  if (isStationQuery) {
+    if (c === 'railway' || t === 'station' || t === 'halt' || t === 'subway_entrance') {
+      s += 150;
+    } else if (c === 'public_transport') {
+      s += 80;
+    }
+    if (n.includes('警察') || n.includes('交番') || n.includes('病院') || n.includes('駐車場')) {
+      s -= 120;
+    }
+    return s;
+  }
 
   // スポーツ施設・運動公園・グラウンド・スタジアム・学校を最優先
   if (
@@ -416,36 +420,49 @@ export function getSoccerRelevanceScore(name, category, type) {
   return s;
 }
 
+function isValidCoordValue(v) {
+  return typeof v === 'number' && !Number.isNaN(v) && Number.isFinite(v);
+}
+
 /**
- * 住所・施設名に対応するキャッシュ済み座標を取得
+ * 住所・施設名に対応するキャッシュ済み座標を取得（TTL 30日）
  */
 export function getCachedCoords(address) {
   if (!address || typeof address !== 'string') return null;
   const key = address.trim().toLowerCase();
+  const now = Date.now();
+
   if (memoryCache.has(key)) {
-    return memoryCache.get(key);
+    const entry = memoryCache.get(key);
+    if (!entry.savedAt || now - entry.savedAt <= GEOCODE_CACHE_TTL_MS) {
+      return entry;
+    }
+    memoryCache.delete(key);
   }
 
   try {
-    const raw = localStorage.getItem(GEOCODE_CACHE_KEY);
+    const raw = safeGetItem(GEOCODE_CACHE_KEY, null);
     if (raw) {
       const parsed = JSON.parse(raw);
-      if (parsed[key] && parsed[key].lat && parsed[key].lon) {
-        memoryCache.set(key, parsed[key]);
-        return parsed[key];
+      const item = parsed?.[key];
+      if (item && isValidCoordValue(item.lat) && isValidCoordValue(item.lon)) {
+        if (!item.savedAt || now - item.savedAt <= GEOCODE_CACHE_TTL_MS) {
+          memoryCache.set(key, item);
+          return item;
+        }
       }
     }
-  } catch (e) {
+  } catch {
     // ignore
   }
   return null;
 }
 
 /**
- * 住所・施設名の座標をキャッシュに保存
+ * 住所・施設名の座標をキャッシュに保存（LRU 50件上限）
  */
 export function saveCachedCoords(address, geoData) {
-  if (!address || !geoData || !geoData.lat || !geoData.lon) return;
+  if (!address || !geoData || !isValidCoordValue(geoData.lat) || !isValidCoordValue(geoData.lon)) return;
   const key = address.trim().toLowerCase();
 
   const toSave = {
@@ -459,18 +476,20 @@ export function saveCachedCoords(address, geoData) {
   memoryCache.set(key, toSave);
 
   try {
-    const raw = localStorage.getItem(GEOCODE_CACHE_KEY);
+    const raw = safeGetItem(GEOCODE_CACHE_KEY, null);
     const parsed = raw ? JSON.parse(raw) : {};
     parsed[key] = toSave;
 
-    // キャッシュが50件を超えた場合は最も古いエントリを削除
-    const keys = Object.keys(parsed);
-    if (keys.length > 50) {
-      delete parsed[keys[0]];
+    // キャッシュが50件を超えた場合は savedAt が最も古いエントリを削除（LRU）
+    const entries = Object.entries(parsed);
+    if (entries.length > 50) {
+      entries.sort((a, b) => (b[1]?.savedAt || 0) - (a[1]?.savedAt || 0));
+      const trimmedObj = Object.fromEntries(entries.slice(0, 50));
+      safeSetItem(GEOCODE_CACHE_KEY, JSON.stringify(trimmedObj));
+    } else {
+      safeSetItem(GEOCODE_CACHE_KEY, JSON.stringify(parsed));
     }
-
-    localStorage.setItem(GEOCODE_CACHE_KEY, JSON.stringify(parsed));
-  } catch (e) {
+  } catch {
     // ignore
   }
 }
@@ -563,23 +582,31 @@ export async function geocodeAddress(address, options = {}) {
     };
   }
 
-  // 0. キャッシュに保存されている場合は外部通信なしで即座に返却（超高速）
-  const cached = getCachedCoords(trimmed);
-  if (cached) {
-    return cached;
-  }
-
-  // カッコや補足のクレンジング
-  // 例: "つくばFC T-Field (茨城県つくば市)" -> cleanName: "つくばFC T-Field"
+  // カッコや補足のクレンジング（多段サフィックスにも対応）
   let cleanName = trimmed.replace(/[\(（][^()（）]+[\)）]/g, '').trim();
-  cleanName = cleanName.replace(/(第\d+コート|A面|B面|C面|人工芝|天然芝|第\d+グラウンド|グラウンド|グランド|サッカー場|球技場)$/i, '').trim();
+  let prevClean;
+  do {
+    prevClean = cleanName;
+    cleanName = cleanName
+      .replace(
+        /[\s　]*(第\d+コート|第\d+グラウンド|第?\d*面の?[ABC]面|[ABC]面|人工芝|天然芝|グラウンド|グランド|サッカー場|球技場)$/i,
+        ''
+      )
+      .trim();
+  } while (cleanName !== prevClean && cleanName.length > 0);
   const extractedMuni = extractMunicipality(trimmed);
 
-  // 0-a. 主要サッカー施設・強豪校グラウンドのビルトイン辞書マッチング（外部通信不要・オフラインでも0msで超高精度）
+  // 0. 主要サッカー施設・強豪校グラウンドのビルトイン辞書マッチング（キャッシュより先に優先チェック）
   const knownVenue = findKnownVenue(trimmed) || (cleanName ? findKnownVenue(cleanName) : null);
   if (knownVenue) {
     saveCachedCoords(trimmed, knownVenue);
     return knownVenue;
+  }
+
+  // 0-b. キャッシュに保存されている場合は外部通信なしで即座に返却
+  const cached = getCachedCoords(trimmed);
+  if (cached) {
+    return cached;
   }
 
   // 1. Google Maps APIキーが設定されている場合は Google Maps を最優先実行！
@@ -634,20 +661,64 @@ export async function geocodeAddress(address, options = {}) {
     try {
       const nomData = await fetchNominatimThrottled(queryToSearch);
       if (Array.isArray(nomData) && nomData.length > 0) {
+        const isStationQuery = /駅$/.test(queryToSearch.trim());
+        const stationCore = isStationQuery ? queryToSearch.trim().replace(/駅$/, '') : '';
+        const isFacilityQuery =
+          /(高校|高等学校|大学|中学|小学校|学園|グラウンド|グランド|サッカー|公園|スタジアム|アリーナ|fc|sc)/i.test(
+            queryToSearch
+          );
+        const isAddressQuery =
+          !isStationQuery &&
+          !isFacilityQuery &&
+          /[都道府県市区町村丁目番地]|[0-9０-９]/.test(queryToSearch);
+
         const coreKeyword = queryToSearch
           .replace(/(高等学校|高校|中学校|学校|グラウンド|グランド|サッカー場|公園|スタジアム|第\d+)/g, '')
           .trim();
 
+        const addressTokens = isAddressQuery
+          ? queryToSearch
+              .replace(/[都道府県]/g, '$& ')
+              .replace(/[市区町村]/g, '$& ')
+              .replace(/[0-9０-９\-－丁目番地号]+/g, ' ')
+              .split(/\s+/)
+              .map((t) => t.trim())
+              .filter((t) => t.length >= 2)
+          : [];
+
         const scored = nomData
           .map((item) => {
-            const name = item.display_name.split(',')[0] || item.name || '';
+            const name = item.name || item.display_name.split(',')[0] || '';
             const category = item.class || item.category || '';
             const type = item.type || '';
-            let score = getSoccerRelevanceScore(name, category, type);
+            let score = getSoccerRelevanceScore(name, category, type, { isStationQuery });
 
-            // コアキーワードがある場合、名前またはdisplay_nameに含まれていなければ除外/大幅減点
-            if (coreKeyword.length >= 2) {
-              const fullText = (item.display_name || '').toLowerCase();
+            const fullText = (item.display_name || '').toLowerCase();
+
+            if (isStationQuery && stationCore.length >= 1) {
+              const nameMatch = name.toLowerCase().includes(stationCore.toLowerCase());
+              const isRailOrStop =
+                category === 'railway' ||
+                category === 'public_transport' ||
+                type === 'station' ||
+                type === 'halt';
+              if (nameMatch && isRailOrStop) {
+                score += 180;
+              } else if (fullText.includes(stationCore.toLowerCase()) && nameMatch) {
+                score += 80;
+              } else {
+                score -= 300;
+              }
+            } else if (isAddressQuery && addressTokens.length > 0) {
+              const matchCount = addressTokens.filter((tok) =>
+                fullText.includes(tok.toLowerCase())
+              ).length;
+              if (matchCount >= Math.max(1, addressTokens.length - 1)) {
+                score += 150 + matchCount * 20;
+              } else {
+                score -= 200;
+              }
+            } else if (coreKeyword.length >= 2) {
               const lowerKw = coreKeyword.toLowerCase();
               if (fullText.includes(lowerKw)) {
                 score += 150;
@@ -836,9 +907,13 @@ export function calculateFastEstimateDeparture(event, originAddress) {
 
   if (targetArrivalMin === null) return null;
 
-  // 2. 移動所要時間の数学的算出（キャッシュ済み座標を使用）
-  const destCoords = event.venue ? getCachedCoords(event.venue) : null;
-  const originCoords = originAddress ? getCachedCoords(originAddress) : null;
+  // 2. 移動所要時間の数学的算出（ビルトイン辞書 + キャッシュ済み座標を使用）
+  const destCoords = event.venue
+    ? findKnownVenue(event.venue) || getCachedCoords(event.venue)
+    : null;
+  const originCoords = originAddress
+    ? findKnownVenue(originAddress) || getCachedCoords(originAddress)
+    : null;
 
   let travelDurationMin = 40; // デフォルトの推定所要時間（40分）
   let isDistanceEstimated = false;

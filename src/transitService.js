@@ -111,16 +111,15 @@ export async function fetchNearbyStations(lat, lon, radiusMeters = 3500) {
     out 5;
   `;
 
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 4000);
   try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 4000);
     const res = await fetch('https://overpass-api.de/api/interpreter', {
       method: 'POST',
-      body: overpassQuery,
+      body: `data=${encodeURIComponent(overpassQuery)}`,
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       signal: controller.signal,
     });
-    clearTimeout(timeout);
 
     if (res.ok) {
       const data = await res.json();
@@ -171,6 +170,8 @@ export async function fetchNearbyStations(lat, lon, radiusMeters = 3500) {
     }
   } catch (e) {
     console.warn('Overpass stations lookup failed, skipping:', e);
+  } finally {
+    clearTimeout(timeout);
   }
 
   return [];

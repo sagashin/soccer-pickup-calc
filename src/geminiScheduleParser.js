@@ -1,8 +1,44 @@
 /**
  * Gemini API によるスケジュール画像の解析ユーティリティ
  */
+import { safeGetItem, safeSetItem, safeRemoveItem } from './utils/storage.js';
 
 export const GEMINI_API_KEY_STORAGE = 'soccer_pickup_gemini_api_key_v1';
+const MAX_UPLOAD_BYTES = 15 * 1024 * 1024; // 15MB
+const MODEL_LIST_CACHE = new Map();
+const MODEL_LIST_TTL_MS = 10 * 60 * 1000;
+
+export function getSavedGeminiApiKey() {
+  const saved = String(safeGetItem(GEMINI_API_KEY_STORAGE, '')).trim();
+  if (saved) return saved;
+  const env = typeof import.meta !== 'undefined' && import.meta.env ? import.meta.env : {};
+  return String(env.VITE_GEMINI_API_KEY || '').trim();
+}
+
+export function saveGeminiApiKey(key) {
+  const trimmed = String(key ?? '').trim();
+  if (trimmed) {
+    safeSetItem(GEMINI_API_KEY_STORAGE, trimmed);
+  } else {
+    safeRemoveItem(GEMINI_API_KEY_STORAGE);
+  }
+  return trimmed;
+}
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = 30000) {
+  const controller = new AbortController();
+  const timerId = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } catch (err) {
+    if (err?.name === 'AbortError') {
+      throw new Error('AI解析がタイムアウトしました。画像を小さくするか通信環境を確認して再試行してください。');
+    }
+    throw err;
+  } finally {
+    clearTimeout(timerId);
+  }
+}
 
 // サンプルデータ（ユーザーが提供してくれた日程表画像の再現）
 export const SAMPLE_SCHEDULE_EVENTS = [
@@ -100,6 +136,12 @@ export const SAMPLE_SCHEDULE_EVENTS = [
  * ファイルオブジェクトをBase64文字列に変換（PDF対応 ＆ 画像は長辺1600px以内にクライアント圧縮）
  */
 export function fileToBase64(file) {
+  if (!file) return Promise.reject(new Error('ファイルが選択されていません'));
+  if (file.size && file.size > MAX_UPLOAD_BYTES) {
+    return Promise.reject(
+      new Error('ファイルサイズが15MBを超えています。より小さい画像またはPDFを選択してください。')
+    );
+  }
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => {
@@ -238,10 +280,12 @@ export async function generateGeminiJson({ prompt, base64Data, mimeType, apiKey 
   const preferredOrder = [
     'gemini-3.8-flash',
     'gemini-3.5-flash',
+    'gemini-2.5-flash',
     'gemini-3.5-flash-lite',
     'gemini-flash-latest',
     'gemini-3.1-flash-lite',
     'gemini-flash-lite-latest',
+    'gemini-2.5-pro',
     'gemini-3.1-pro-preview',
     'gemini-pro-latest',
   ];
@@ -259,59 +303,69 @@ export async function generateGeminiJson({ prompt, base64Data, mimeType, apiKey 
     'gemma',
     '1.5',
     '2.0',
-    '2.5',
   ];
 
-  // 1. Google APIからこのAPIキーで実際に使えるモデル一覧を動的に取得
+  const trimmedKey = apiKey.trim();
+
+  // 1. Google APIからこのAPIキーで実際に使えるモデル一覧を動的に取得（10分キャッシュ・APIキーはヘッダ送信）
   let candidateModels = [];
-  try {
-    const listRes = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey.trim())}`
-    );
-    if (listRes.ok) {
-      const listData = await listRes.json();
-      if (Array.isArray(listData.models)) {
-        const available = listData.models
-          .filter((m) => {
-            if (!m.supportedGenerationMethods?.includes('generateContent')) return false;
-            const name = (m.name || '').toLowerCase();
-            if (!name.includes('gemini')) return false;
-            return !excludedTokens.some((token) => name.includes(token));
-          })
-          .map((m) => m.name.replace(/^models\//, ''));
+  const cachedModels = MODEL_LIST_CACHE.get(trimmedKey);
+  if (cachedModels && Date.now() - cachedModels.fetchedAt < MODEL_LIST_TTL_MS) {
+    candidateModels = cachedModels.models;
+  } else {
+    try {
+      const listRes = await fetchWithTimeout(
+        'https://generativelanguage.googleapis.com/v1beta/models',
+        { headers: { 'x-goog-api-key': trimmedKey } },
+        10000
+      );
+      if (listRes.ok) {
+        const listData = await listRes.json();
+        if (Array.isArray(listData.models)) {
+          const available = listData.models
+            .filter((m) => {
+              if (!m.supportedGenerationMethods?.includes('generateContent')) return false;
+              const name = (m.name || '').toLowerCase();
+              if (!name.includes('gemini')) return false;
+              return !excludedTokens.some((token) => name.includes(token));
+            })
+            .map((m) => m.name.replace(/^models\//, ''));
 
-        candidateModels = available.sort((a, b) => {
-          const idxA = preferredOrder.indexOf(a);
-          const idxB = preferredOrder.indexOf(b);
-          if (idxA !== -1 && idxB !== -1) return idxA - idxB;
-          if (idxA !== -1) return -1;
-          if (idxB !== -1) return 1;
+          candidateModels = available.sort((a, b) => {
+            const idxA = preferredOrder.indexOf(a);
+            const idxB = preferredOrder.indexOf(b);
+            if (idxA !== -1 && idxB !== -1) return idxA - idxB;
+            if (idxA !== -1) return -1;
+            if (idxB !== -1) return 1;
 
-          // バージョン番号が大きい（新しい世代）順を優先
-          const verA = extractGeminiVersion(a);
-          const verB = extractGeminiVersion(b);
-          if (verA !== verB) return verB - verA;
+            const verA = extractGeminiVersion(a);
+            const verB = extractGeminiVersion(b);
+            if (verA !== verB) return verB - verA;
 
-          // preview や exp が付くモデルは安定版の後ろに配置
-          const aUnstable = a.includes('preview') || a.includes('exp') ? 1 : 0;
-          const bUnstable = b.includes('preview') || b.includes('exp') ? 1 : 0;
-          if (aUnstable !== bUnstable) return aUnstable - bUnstable;
+            const aUnstable = a.includes('preview') || a.includes('exp') ? 1 : 0;
+            const bUnstable = b.includes('preview') || b.includes('exp') ? 1 : 0;
+            if (aUnstable !== bUnstable) return aUnstable - bUnstable;
 
-          return 0;
-        });
+            return 0;
+          });
+
+          if (candidateModels.length > 0) {
+            MODEL_LIST_CACHE.set(trimmedKey, { models: candidateModels, fetchedAt: Date.now() });
+          }
+        }
+      } else if (listRes.status === 400 || listRes.status === 401 || listRes.status === 403) {
+        const errText = await listRes.text();
+        if (errText.includes('API_KEY_INVALID') || errText.includes('API key not valid')) {
+          throw new Error('Gemini APIキーが無効です。Google AI Studioでキーをご確認ください。');
+        }
+        throw new Error(`Gemini APIキー認証エラー (${listRes.status}): ${errText}`);
       }
-    } else if (listRes.status === 400 || listRes.status === 401 || listRes.status === 403) {
-      const errText = await listRes.text();
-      if (errText.includes('API_KEY_INVALID') || errText.includes('API key not valid')) {
-        throw new Error('Gemini APIキーが無効です。Google AI Studioでキーをご確認ください。');
+    } catch (err) {
+      if (err.message?.includes('Gemini APIキー')) {
+        throw err;
       }
-      throw new Error(`Gemini APIキー認証エラー (${listRes.status}): ${errText}`);
+      console.warn('ListModels failed, falling back to static list:', err);
     }
-  } catch (err) {
-    if (err.message?.includes('Gemini APIキー')) {
-      throw err;
-    }
-    console.warn('ListModels failed, falling back to static list:', err);
   }
 
   // ListModelsが失敗した場合のフォールバック配列
@@ -319,6 +373,7 @@ export async function generateGeminiJson({ prompt, base64Data, mimeType, apiKey 
     candidateModels = [
       'gemini-3.8-flash',
       'gemini-3.5-flash',
+      'gemini-2.5-flash',
       'gemini-3.5-flash-lite',
       'gemini-flash-latest',
       'gemini-3.1-flash-lite',
@@ -330,16 +385,19 @@ export async function generateGeminiJson({ prompt, base64Data, mimeType, apiKey 
   for (const model of candidateModels) {
     for (const apiVersion of ['v1beta', 'v1']) {
       try {
-        const url = `https://generativelanguage.googleapis.com/${apiVersion}/models/${model}:generateContent?key=${encodeURIComponent(
-          apiKey.trim()
-        )}`;
-        const res = await fetch(url, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
+        const url = `https://generativelanguage.googleapis.com/${apiVersion}/models/${model}:generateContent`;
+        const res = await fetchWithTimeout(
+          url,
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-goog-api-key': trimmedKey,
+            },
+            body: JSON.stringify(requestBody),
           },
-          body: JSON.stringify(requestBody),
-        });
+          30000
+        );
 
         if (!res.ok) {
           const errorText = await res.text();

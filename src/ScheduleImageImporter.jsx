@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useRef } from 'react';
 import {
   Camera,
   Upload,
@@ -6,20 +6,17 @@ import {
   Key,
   Clock,
   MapPin,
-  Calendar,
   CheckCircle,
   AlertCircle,
-  HelpCircle,
-  X,
   ChevronDown,
   ChevronUp,
   ExternalLink,
-  RotateCcw,
   Play,
   CalendarCheck,
 } from 'lucide-react';
 import {
-  GEMINI_API_KEY_STORAGE,
+  getSavedGeminiApiKey,
+  saveGeminiApiKey,
   SAMPLE_SCHEDULE_EVENTS,
   fileToBase64,
   parseScheduleImageWithGemini,
@@ -46,15 +43,10 @@ export default function ScheduleImageImporter({
   const toggleOpen = onToggleOpen || (() => setLocalIsOpen((prev) => !prev));
 
   const [saveSuccessMessage, setSaveSuccessMessage] = useState('');
-  const [apiKey, setApiKey] = useState(() => {
-    const envKey = import.meta.env?.VITE_GEMINI_API_KEY || '';
-    const saved = localStorage.getItem(GEMINI_API_KEY_STORAGE) || '';
-    return saved.trim() || envKey.trim();
-  });
+  const [apiKey, setApiKey] = useState(() => getSavedGeminiApiKey());
   const [showKeyInput, setShowKeyInput] = useState(false);
   const [tempApiKey, setTempApiKey] = useState('');
 
-  const [imagePreview, setImagePreview] = useState(null);
   const [analyzing, setAnalyzing] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
 
@@ -65,15 +57,10 @@ export default function ScheduleImageImporter({
 
   const fileInputRef = useRef(null);
 
-  useEffect(() => {
-    localStorage.setItem(GEMINI_API_KEY_STORAGE, apiKey);
-  }, [apiKey]);
-
   const handleSaveApiKey = (e) => {
     e.preventDefault();
-    const trimmed = tempApiKey.trim();
-    setApiKey(trimmed);
-    localStorage.setItem(GEMINI_API_KEY_STORAGE, trimmed);
+    const saved = saveGeminiApiKey(tempApiKey);
+    setApiKey(saved);
     setShowKeyInput(false);
     setErrorMessage('');
   };
@@ -91,12 +78,11 @@ export default function ScheduleImageImporter({
     try {
       setAnalyzing(true);
       setErrorMessage('');
-      const { base64, mimeType, previewUrl } = await fileToBase64(file);
-      setImagePreview(previewUrl);
+      const { base64, mimeType } = await fileToBase64(file);
 
       const events = await parseScheduleImageWithGemini(base64, mimeType, apiKey);
       if (events.length === 0) {
-        setErrorMessage('画像から予定を検出できませんでした。別の画像をお試しいただくか、サンプルデータをお試しください。');
+        setErrorMessage('画像・PDFから予定を検出できませんでした。別のファイルをお試しいただくか、サンプルデータをお試しください。');
       } else {
         setParsedEvents(events);
         setSelectedEventId(events[0].id);
@@ -115,7 +101,6 @@ export default function ScheduleImageImporter({
       setErrorMessage(err.message || '画像の解析中にエラーが発生しました。');
     } finally {
       setAnalyzing(false);
-      // リセット
       if (fileInputRef.current) fileInputRef.current.value = '';
     }
   };
@@ -123,7 +108,6 @@ export default function ScheduleImageImporter({
   // サンプルデータ読み込み（ユーザー提供の画像データ）
   const handleLoadSample = () => {
     setErrorMessage('');
-    setImagePreview(null);
     setParsedEvents(SAMPLE_SCHEDULE_EVENTS);
     // 添付画像の「新人戦 vs ソルース 10:00@羽生中央公園」をデフォルト選択
     setSelectedEventId('sample-3');
@@ -175,12 +159,11 @@ export default function ScheduleImageImporter({
   return (
     <section className="bg-gradient-to-br from-emerald-50 via-teal-50 to-sky-50 rounded-3xl p-4 shadow-sm border border-emerald-200/80 space-y-3">
       {/* 折りたたみヘッダー */}
-      <div
+      <button
+        type="button"
         onClick={toggleOpen}
-        role="button"
-        tabIndex={0}
-        onKeyDown={(e) => e.key === 'Enter' && toggleOpen()}
-        className="flex items-center justify-between cursor-pointer select-none"
+        aria-expanded={isOpen}
+        className="w-full flex items-center justify-between text-left select-none"
       >
         <div className="flex items-center gap-2.5">
           <div className="w-9 h-9 rounded-2xl bg-gradient-to-tr from-emerald-600 to-teal-500 text-white flex items-center justify-center shadow-md">
@@ -196,7 +179,7 @@ export default function ScheduleImageImporter({
               </span>
             </div>
             <p className="text-[11px] text-slate-600 font-medium">
-              LINEの日程スクショから予定を選んで集合時間を逆算
+              LINEの日程スクショやPDFから予定を選んで集合時間を逆算
             </p>
           </div>
         </div>
@@ -207,15 +190,11 @@ export default function ScheduleImageImporter({
               {parsedEvents.length}件検出済
             </span>
           )}
-          <button
-            type="button"
-            className="p-1.5 text-slate-400 hover:text-slate-600 rounded-full"
-            aria-label="開閉"
-          >
+          <span className="p-1.5 text-slate-400 rounded-full" aria-hidden="true">
             {isOpen ? <ChevronUp className="w-5 h-5" /> : <ChevronDown className="w-5 h-5" />}
-          </button>
+          </span>
         </div>
-      </div>
+      </button>
 
       {/* 開閉コンテンツ */}
       {isOpen && (
@@ -290,7 +269,7 @@ export default function ScheduleImageImporter({
             <input
               ref={fileInputRef}
               type="file"
-              accept="image/*"
+              accept="image/*,application/pdf"
               onChange={handleFileSelect}
               className="hidden"
               id="schedule-image-input"
@@ -303,10 +282,10 @@ export default function ScheduleImageImporter({
                 <Upload className="w-5 h-5" />
               </div>
               <span className="text-xs font-black text-slate-800">
-                日程表の画像・スクショを選択 / 写真を撮る
+                日程表の画像・PDFを選択 / 写真を撮る
               </span>
               <span className="text-[10px] text-slate-500 mt-0.5">
-                LINEで届いた表形式の日程表・カレンダー画像など
+                LINEで届いた日程表スクショ・カレンダー画像・PDF資料など
               </span>
             </label>
           </div>
@@ -348,7 +327,7 @@ export default function ScheduleImageImporter({
             <div className="space-y-2.5">
               {/* 保存成功フィードバックメッセージ */}
               {saveSuccessMessage && (
-                <div className="bg-emerald-600 text-white text-xs font-bold p-3 rounded-2xl shadow-md flex items-center justify-between animate-fadeIn">
+                <div className="bg-emerald-600 text-white text-xs font-bold p-3 rounded-2xl shadow-md flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     <CheckCircle className="w-4 h-4 shrink-0 text-emerald-200" />
                     <span>{saveSuccessMessage}</span>
@@ -378,7 +357,6 @@ export default function ScheduleImageImporter({
                     onClick={() => {
                       setParsedEvents([]);
                       setSelectedEventId(null);
-                      setImagePreview(null);
                     }}
                     className="text-[11px] text-slate-400 hover:text-slate-600"
                   >
@@ -398,8 +376,13 @@ export default function ScheduleImageImporter({
                       key={ev.id}
                       onClick={() => !isOff && setSelectedEventId(ev.id)}
                       role="button"
-                      tabIndex={0}
-                      onKeyDown={(e) => e.key === 'Enter' && !isOff && setSelectedEventId(ev.id)}
+                      tabIndex={isOff ? -1 : 0}
+                      onKeyDown={(e) => {
+                        if ((e.key === 'Enter' || e.key === ' ') && !isOff) {
+                          e.preventDefault();
+                          setSelectedEventId(ev.id);
+                        }
+                      }}
                       className={`p-3 rounded-2xl border transition cursor-pointer text-left ${
                         isOff
                           ? 'bg-slate-100/70 border-slate-200 opacity-60 cursor-not-allowed'

@@ -28,9 +28,11 @@ import {
   Copy,
 } from 'lucide-react';
 import {
-  GEMINI_API_KEY_STORAGE,
+  getSavedGeminiApiKey,
+  saveGeminiApiKey,
   fileToBase64,
 } from './geminiScheduleParser';
+import { sanitizeHttpUrl, openLineShare } from './utils/urlUtils';
 import {
   getVenueDocs,
   upsertVenueDoc,
@@ -138,7 +140,7 @@ export default function TeamVaultView({
   }, [refreshTrigger]);
 
   // Gemini APIキー管理
-  const [apiKey, setApiKey] = useState(() => localStorage.getItem(GEMINI_API_KEY_STORAGE) || '');
+  const [apiKey, setApiKey] = useState(() => getSavedGeminiApiKey());
   const [showKeyConfig, setShowKeyConfig] = useState(false);
 
   // 👨‍👩‍👦 家族一括共有モーダル状態
@@ -218,13 +220,39 @@ export default function TeamVaultView({
     }
   }, [initialSubTab]);
 
+  useEffect(() => {
+    const anyModalOpen =
+      isVenueModalOpen ||
+      isFitnessModalOpen ||
+      isCoachModalOpen ||
+      Boolean(previewAttachment) ||
+      isPasteModalOpen ||
+      isFamilyShareModalOpen;
+    if (!anyModalOpen) return;
+    const onKeyDown = (e) => {
+      if (e.key === 'Escape') {
+        if (previewAttachment) setPreviewAttachment(null);
+        else if (isPasteModalOpen) setIsPasteModalOpen(false);
+        else if (isFamilyShareModalOpen) setIsFamilyShareModalOpen(false);
+        else if (isVenueModalOpen) setIsVenueModalOpen(false);
+        else if (isFitnessModalOpen) setIsFitnessModalOpen(false);
+        else if (isCoachModalOpen) setIsCoachModalOpen(false);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [
+    isVenueModalOpen,
+    isFitnessModalOpen,
+    isCoachModalOpen,
+    previewAttachment,
+    isPasteModalOpen,
+    isFamilyShareModalOpen,
+  ]);
+
   const handleSaveApiKey = (val) => {
     setApiKey(val);
-    if (val.trim()) {
-      localStorage.setItem(GEMINI_API_KEY_STORAGE, val.trim());
-    } else {
-      localStorage.removeItem(GEMINI_API_KEY_STORAGE);
-    }
+    saveGeminiApiKey(val);
   };
 
   // サンプル一括読込
@@ -756,9 +784,18 @@ export default function TeamVaultView({
       .split('\n')
       .map((s) => s.trim())
       .filter(Boolean);
-    const links = coachForm.linkUrl.trim()
-      ? [{ title: coachForm.linkTitle.trim() || coachForm.linkUrl.trim(), url: coachForm.linkUrl.trim() }]
-      : editingCoachNote?.links || [];
+    const trimmedUrl = coachForm.linkUrl.trim();
+    const safeUrl = trimmedUrl ? sanitizeHttpUrl(trimmedUrl) : '';
+    if (trimmedUrl && !safeUrl) {
+      alert('参考リンクには http:// または https:// で始まる有効なURLを入力してください。');
+      return;
+    }
+    const existingExtraLinks = Array.isArray(editingCoachNote?.links)
+      ? editingCoachNote.links.slice(1)
+      : [];
+    const links = safeUrl
+      ? [{ title: coachForm.linkTitle.trim() || safeUrl, url: safeUrl }, ...existingExtraLinks]
+      : existingExtraLinks;
 
     const { list } = upsertCoachNote({
       ...(editingCoachNote || {}),
@@ -823,39 +860,22 @@ export default function TeamVaultView({
   const handleShareSingleVenue = (doc) => {
     const cautions = (doc.cautions || []).map((c) => `・${c}`).join('\n');
     const msg = `🏟️【会場・駐車場案内】${doc.title || doc.venueName}\n会場名：${doc.venueName || '未設定'}\n\n■ 🅿️ 駐車場ルール\n${doc.parkingRules || '特になし'}\n\n■ ⚠️ 注意事項\n${cautions || '特になし'}`;
-    const enc = encodeURIComponent(msg);
-    const isMobile = typeof navigator !== 'undefined' && /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
-    if (isMobile) {
-      window.location.href = `line://msg/text/${enc}`;
-    } else {
-      window.open(`https://line.me/R/share?text=${enc}`, '_blank');
-    }
+    openLineShare(msg);
   };
 
   const handleShareSingleFitness = (rec) => {
     const pbText = rec.isPersonalBest ? ' 🏆自己ベスト更新！' : '';
     const diffText = rec.diffFromPrev ? ` (前回比: ${rec.diffFromPrev > 0 ? `+${rec.diffFromPrev}` : rec.diffFromPrev}${rec.unit})` : '';
     const msg = `⚡【体力測定記録】${rec.eventName}\n測定日：${rec.dateIso}\n記録：${rec.value}${rec.unit}${pbText}${diffText}\nメモ：${rec.notes || 'なし'}`;
-    const enc = encodeURIComponent(msg);
-    const isMobile = typeof navigator !== 'undefined' && /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
-    if (isMobile) {
-      window.location.href = `line://msg/text/${enc}`;
-    } else {
-      window.open(`https://line.me/R/share?text=${enc}`, '_blank');
-    }
+    openLineShare(msg);
   };
 
   const handleShareSingleCoach = (note) => {
     const actions = (note.actionItems || []).map((a) => `・${a}`).join('\n');
-    const linkText = note.links?.[0]?.url ? `\n🔗 参考URL: ${note.links[0].url}` : '';
+    const safeFirstUrl = sanitizeHttpUrl(note.links?.[0]?.url);
+    const linkText = safeFirstUrl ? `\n🔗 参考URL: ${safeFirstUrl}` : '';
     const msg = `💬【コーチ助言】${note.title}\n日付：${note.dateIso} (${note.category})\n\n■ 指導内容\n${note.content || 'なし'}\n\n■ 🎯 意識するアクション\n${actions || 'なし'}${linkText}`;
-    const enc = encodeURIComponent(msg);
-    const isMobile = typeof navigator !== 'undefined' && /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
-    if (isMobile) {
-      window.location.href = `line://msg/text/${enc}`;
-    } else {
-      window.open(`https://line.me/R/share?text=${enc}`, '_blank');
-    }
+    openLineShare(msg);
   };
 
   return (
@@ -1559,19 +1579,23 @@ export default function TeamVaultView({
 
                 <div className="flex flex-wrap items-center justify-between gap-2 pt-1 border-t border-slate-100">
                   <div className="flex flex-wrap items-center gap-2">
-                    {note.links?.map((lk, idx) => (
-                      <a
-                        key={idx}
-                        href={lk.url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-xs font-black text-sky-800 bg-sky-50 hover:bg-sky-100 border border-sky-200 px-3 py-1.5 rounded-xl inline-flex items-center gap-1.5 transition"
-                      >
-                        <LinkIcon className="w-3.5 h-3.5 text-sky-600" />
-                        <span>{lk.title || '参考リンク'}</span>
-                        <ExternalLink className="w-3 h-3" />
-                      </a>
-                    ))}
+                    {note.links?.map((lk, idx) => {
+                      const safeUrl = sanitizeHttpUrl(lk?.url);
+                      if (!safeUrl) return null;
+                      return (
+                        <a
+                          key={idx}
+                          href={safeUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-xs font-black text-sky-800 bg-sky-50 hover:bg-sky-100 border border-sky-200 px-3 py-1.5 rounded-xl inline-flex items-center gap-1.5 transition"
+                        >
+                          <LinkIcon className="w-3.5 h-3.5 text-sky-600" />
+                          <span>{lk.title || '参考リンク'}</span>
+                          <ExternalLink className="w-3 h-3" />
+                        </a>
+                      );
+                    })}
                     {note.hasAttachment && (
                       <button
                         type="button"
@@ -1600,7 +1624,14 @@ export default function TeamVaultView({
 
       {/* ==================== 会場資料 追加・編集モーダル ==================== */}
       {isVenueModalOpen && (
-        <div className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
+        <div
+          role="dialog"
+          aria-modal="true"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setIsVenueModalOpen(false);
+          }}
+          className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto"
+        >
           <div className="bg-white rounded-3xl max-w-md w-full p-5 shadow-2xl border border-slate-200 space-y-3 my-8">
             <div className="flex items-center justify-between">
               <h3 className="text-base font-black text-slate-900">
@@ -1631,8 +1662,10 @@ export default function TeamVaultView({
                       venueName: vName,
                       title: venueForm.title || `${vName} 駐車場・会場ルール`,
                     });
-                    if (item.lat && item.lon) {
-                      saveCachedCoords(vName, { lat: item.lat, lon: item.lon });
+                    const lat = item.lat ?? item.coords?.lat;
+                    const lon = item.lon ?? item.coords?.lon;
+                    if (lat != null && lon != null) {
+                      saveCachedCoords(vName, { lat, lon });
                     }
                   }}
                   placeholder="例: 羽生市中央公園 / つくばFC T-Field"
@@ -1738,7 +1771,14 @@ export default function TeamVaultView({
 
       {/* ==================== 体力測定 追加・編集モーダル ==================== */}
       {isFitnessModalOpen && (
-        <div className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-sm flex items-center justify-center p-4">
+        <div
+          role="dialog"
+          aria-modal="true"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setIsFitnessModalOpen(false);
+          }}
+          className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-sm flex items-center justify-center p-4"
+        >
           <div className="bg-white rounded-3xl max-w-md w-full p-5 shadow-2xl border border-slate-200 space-y-3">
             <div className="flex items-center justify-between">
               <h3 className="text-base font-black text-slate-900">
@@ -1879,7 +1919,14 @@ export default function TeamVaultView({
 
       {/* ==================== コーチ助言 追加・編集モーダル ==================== */}
       {isCoachModalOpen && (
-        <div className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
+        <div
+          role="dialog"
+          aria-modal="true"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setIsCoachModalOpen(false);
+          }}
+          className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto"
+        >
           <div className="bg-white rounded-3xl max-w-md w-full p-5 shadow-2xl border border-slate-200 space-y-3 my-8">
             <div className="flex items-center justify-between">
               <h3 className="text-base font-black text-slate-900">
@@ -1997,7 +2044,14 @@ export default function TeamVaultView({
 
       {/* ==================== 添付PDF/画像 原本プレビューモーダル ==================== */}
       {previewAttachment && (
-        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-3 sm:p-5">
+        <div
+          role="dialog"
+          aria-modal="true"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setPreviewAttachment(null);
+          }}
+          className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-3 sm:p-5"
+        >
           <div className="bg-white rounded-3xl max-w-3xl w-full max-h-[92vh] flex flex-col shadow-2xl border border-slate-200 overflow-hidden">
             <div className="p-4 border-b border-slate-200 flex items-center justify-between gap-2">
               <div className="min-w-0">
@@ -2047,7 +2101,14 @@ export default function TeamVaultView({
       )}
       {/* ==================== テキスト貼り付け登録モーダル ==================== */}
       {isPasteModalOpen && (
-        <div className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-sm flex items-center justify-center p-3 sm:p-5">
+        <div
+          role="dialog"
+          aria-modal="true"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setIsPasteModalOpen(false);
+          }}
+          className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-sm flex items-center justify-center p-3 sm:p-5"
+        >
           <div className="bg-white rounded-3xl max-w-xl w-full max-h-[92vh] flex flex-col shadow-2xl border border-slate-200 overflow-hidden">
             <div className="p-4 border-b border-slate-200 flex items-center justify-between gap-2 bg-gradient-to-r from-emerald-50/60 to-slate-50">
               <div className="flex items-center gap-2">
@@ -2226,7 +2287,14 @@ export default function TeamVaultView({
 
       {/* ==================== 👨‍👩‍👦 家族一括LINE共有モーダル ==================== */}
       {isFamilyShareModalOpen && (
-        <div className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-sm flex items-center justify-center p-4">
+        <div
+          role="dialog"
+          aria-modal="true"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setIsFamilyShareModalOpen(false);
+          }}
+          className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-sm flex items-center justify-center p-4"
+        >
           <div className="bg-white rounded-3xl max-w-sm w-full p-5 shadow-2xl border border-slate-200 space-y-4">
             <div className="flex items-center justify-between">
               <h3 className="text-base font-black text-slate-900 flex items-center gap-2">

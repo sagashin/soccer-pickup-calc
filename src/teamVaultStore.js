@@ -205,6 +205,7 @@ function openAttachmentDb() {
       };
       request.onsuccess = (e) => resolve(e.target.result);
       request.onerror = (e) => reject(e.target.error || new Error('IndexedDB open failed'));
+      request.onblocked = () => reject(new Error('IndexedDB open blocked by another tab'));
     } catch (err) {
       reject(err);
     }
@@ -233,6 +234,10 @@ export async function saveAttachmentToIdb(id, { dataUrl, mimeType, fileName }) {
         db.close();
         resolve(false);
       };
+      tx.onabort = () => {
+        db.close();
+        resolve(false);
+      };
     });
   } catch (err) {
     console.warn('IndexedDB save warning:', err);
@@ -256,6 +261,10 @@ export async function getAttachmentFromIdb(id) {
         db.close();
         resolve(null);
       };
+      tx.onabort = () => {
+        db.close();
+        resolve(null);
+      };
     });
   } catch (err) {
     console.warn('IndexedDB get warning:', err);
@@ -276,6 +285,10 @@ export async function deleteAttachmentFromIdb(id) {
         resolve(true);
       };
       tx.onerror = () => {
+        db.close();
+        resolve(false);
+      };
+      tx.onabort = () => {
         db.close();
         resolve(false);
       };
@@ -740,19 +753,26 @@ export function mergeImportedVenueDocs(importedDocs) {
 
     if (idx >= 0) {
       const existing = list[idx];
-      if (existing.updatedAt && imp.updatedAt && existing.updatedAt > imp.updatedAt) {
+      const existingTs = Number(existing.updatedAt) || 0;
+      const impTs = Number(imp.updatedAt) || 0;
+      if (existingTs > impTs) {
         return; // ローカルの方が新しいためスキップ
       }
+      const isNewer = impTs > existingTs;
       list[idx] = {
         ...existing,
-        title: imp.title || existing.title,
-        venueName: imp.venueName || existing.venueName,
-        docType: imp.docType || existing.docType,
-        summary: imp.summary || existing.summary,
-        parkingRules: imp.parkingRules || existing.parkingRules,
-        cautions: Array.isArray(imp.cautions) && imp.cautions.length > 0 ? imp.cautions : existing.cautions,
-        dateIso: imp.dateIso || existing.dateIso,
-        updatedAt: Math.max(existing.updatedAt || 0, imp.updatedAt || Date.now()),
+        title: isNewer ? (imp.title ?? existing.title) : (imp.title || existing.title),
+        venueName: isNewer ? (imp.venueName ?? existing.venueName) : (imp.venueName || existing.venueName),
+        docType: isNewer ? (imp.docType ?? existing.docType) : (imp.docType || existing.docType),
+        summary: isNewer ? (imp.summary ?? existing.summary) : (imp.summary || existing.summary),
+        parkingRules: isNewer
+          ? (imp.parkingRules ?? existing.parkingRules)
+          : (imp.parkingRules || existing.parkingRules),
+        cautions: isNewer
+          ? (Array.isArray(imp.cautions) ? imp.cautions : existing.cautions)
+          : (Array.isArray(imp.cautions) && imp.cautions.length > 0 ? imp.cautions : existing.cautions),
+        dateIso: isNewer ? (imp.dateIso ?? existing.dateIso) : (imp.dateIso || existing.dateIso),
+        updatedAt: Math.max(existingTs, impTs || Date.now()),
       };
       updatedCount++;
     } else {
@@ -813,16 +833,19 @@ export function mergeImportedFitnessRecords(importedRecords) {
 
     if (idx >= 0) {
       const existing = list[idx];
-      if (existing.updatedAt && imp.updatedAt && existing.updatedAt > imp.updatedAt) {
+      const existingTs = Number(existing.updatedAt) || 0;
+      const impTs = Number(imp.updatedAt) || 0;
+      if (existingTs > impTs) {
         return;
       }
+      const isNewer = impTs > existingTs;
       list[idx] = {
         ...existing,
         value: !Number.isNaN(parsedImpVal) ? parsedImpVal : existing.value,
-        unit: imp.unit || existing.unit,
-        category: imp.category || existing.category,
-        notes: imp.notes || existing.notes,
-        updatedAt: Math.max(existing.updatedAt || 0, imp.updatedAt || Date.now()),
+        unit: isNewer ? (imp.unit ?? existing.unit) : (imp.unit || existing.unit),
+        category: isNewer ? (imp.category ?? existing.category) : (imp.category || existing.category),
+        notes: isNewer ? (imp.notes ?? existing.notes) : (imp.notes || existing.notes),
+        updatedAt: Math.max(existingTs, impTs || Date.now()),
       };
       updatedCount++;
     } else {
@@ -877,19 +900,23 @@ export function mergeImportedCoachNotes(importedNotes) {
 
     if (idx >= 0) {
       const existing = list[idx];
-      if (existing.updatedAt && imp.updatedAt && existing.updatedAt > imp.updatedAt) {
+      const existingTs = Number(existing.updatedAt) || 0;
+      const impTs = Number(imp.updatedAt) || 0;
+      if (existingTs > impTs) {
         return;
       }
+      const isNewer = impTs > existingTs;
       list[idx] = {
         ...existing,
-        category: imp.category || existing.category,
-        content: imp.content || existing.content,
-        actionItems:
-          Array.isArray(imp.actionItems) && imp.actionItems.length > 0
-            ? imp.actionItems
-            : existing.actionItems,
+        category: isNewer ? (imp.category ?? existing.category) : (imp.category || existing.category),
+        content: isNewer ? (imp.content ?? existing.content) : (imp.content || existing.content),
+        actionItems: isNewer
+          ? (Array.isArray(imp.actionItems) ? imp.actionItems : existing.actionItems)
+          : (Array.isArray(imp.actionItems) && imp.actionItems.length > 0
+              ? imp.actionItems
+              : existing.actionItems),
         links: Array.isArray(imp.links) ? sanitizedLinks : existing.links,
-        updatedAt: Math.max(existing.updatedAt || 0, imp.updatedAt || Date.now()),
+        updatedAt: Math.max(existingTs, impTs || Date.now()),
       };
       updatedCount++;
     } else {

@@ -166,6 +166,7 @@ export default function PlaceAutocompleteInput({
   const [suggestions, setSuggestions] = useState([]);
   const [isOpen, setIsOpen] = useState(false);
   const [searching, setSearching] = useState(false);
+  const [hasSearched, setHasSearched] = useState(false);
   const containerRef = useRef(null);
   const skipNextFetchRef = useRef(false);
   const selectRequestIdRef = useRef(0);
@@ -195,11 +196,13 @@ export default function PlaceAutocompleteInput({
     if (!isOpen || trimmed.length < 2) {
       setSuggestions([]);
       setSearching(false);
+      setHasSearched(false);
       return;
     }
 
     const controller = new AbortController();
     setSearching(true);
+    setHasSearched(false);
 
     const timer = setTimeout(async () => {
       try {
@@ -214,6 +217,7 @@ export default function PlaceAutocompleteInput({
       } finally {
         if (!controller.signal.aborted) {
           setSearching(false);
+          setHasSearched(true);
         }
       }
     }, 260);
@@ -274,6 +278,8 @@ export default function PlaceAutocompleteInput({
   };
 
   const isGoogleSource = getSavedGoogleMapsApiKey();
+  const showDropdown =
+    isOpen && (suggestions.length > 0 || searching || (hasSearched && (value || '').trim().length >= 2));
 
   return (
     <div ref={containerRef} className="relative w-full">
@@ -282,10 +288,18 @@ export default function PlaceAutocompleteInput({
           id={id}
           data-testid={testId}
           type="text"
+          role="combobox"
+          aria-expanded={showDropdown}
+          aria-autocomplete="list"
           value={value}
           onChange={handleInputChange}
           onFocus={() => {
             if ((value || '').trim().length >= 2) setIsOpen(true);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') {
+              setIsOpen(false);
+            }
           }}
           placeholder={placeholder}
           autoComplete="off"
@@ -308,8 +322,11 @@ export default function PlaceAutocompleteInput({
       </div>
 
       {/* サジェストドロップダウン */}
-      {isOpen && (suggestions.length > 0 || searching) && (
-        <div className="absolute left-0 right-0 top-full mt-1.5 bg-white rounded-xl shadow-xl border border-slate-200/90 z-50 overflow-hidden divide-y divide-slate-100">
+      {showDropdown && (
+        <div
+          role="listbox"
+          className="absolute left-0 right-0 top-full mt-1.5 bg-white rounded-xl shadow-xl border border-slate-200/90 z-50 overflow-hidden divide-y divide-slate-100"
+        >
           <div className="px-3 py-1.5 bg-slate-50/80 text-[11px] font-medium text-slate-500 flex items-center justify-between">
             <span className="flex items-center gap-1">
               <MapPin className="w-3 h-3 text-emerald-600" />
@@ -328,6 +345,12 @@ export default function PlaceAutocompleteInput({
             <div className="px-4 py-3 text-xs text-slate-400 text-center flex items-center justify-center gap-2">
               <div className="w-3.5 h-3.5 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin" />
               候補を検索中...
+            </div>
+          )}
+
+          {!searching && hasSearched && suggestions.length === 0 && (
+            <div className="px-4 py-3 text-xs text-slate-500 text-center">
+              該当候補が見つかりません（そのまま計算ボタンで検索できます）
             </div>
           )}
 

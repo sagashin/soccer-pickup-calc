@@ -129,7 +129,7 @@ export const KNOWN_SOCCER_VENUES = [
     displayName: '浦和東高等学校 (埼玉県さいたま市緑区寺山)',
   },
   {
-    keywords: ['成立学園鷲宮グランド', '成立学園', '成立学園鷲宮', '成立鷲宮', '鷲宮グランド'],
+    keywords: ['成立学園鷲宮グランド', '成立学園鷲宮グラウンド', '成立学園鷲宮', '成立鷲宮', '鷲宮グランド'],
     lat: 36.096821,
     lon: 139.698669,
     displayName: '成立学園鷲宮グラウンド (埼玉県久喜市八甫)',
@@ -263,7 +263,7 @@ export const KNOWN_SOCCER_VENUES = [
 export function findKnownVenue(query) {
   if (!query || typeof query !== 'string') return null;
   const trimmed = query.trim();
-  const q = trimmed.toLowerCase().replace(/[\s\u3000]+/g, '');
+  const q = trimmed.normalize('NFKC').toLowerCase().replace(/[\s\u3000]+/g, '');
   if (q.length < 2) return null;
 
   // 「〜駅」などの駅名指定はビルトイン高校・スタジアム辞書で上書きしない
@@ -271,7 +271,7 @@ export function findKnownVenue(query) {
 
   for (const venue of KNOWN_SOCCER_VENUES) {
     for (const kw of venue.keywords) {
-      const cleanKw = kw.toLowerCase().replace(/[\s\u3000]+/g, '');
+      const cleanKw = kw.normalize('NFKC').toLowerCase().replace(/[\s\u3000]+/g, '');
       if (q.includes(cleanKw)) {
         return {
           lat: venue.lat,
@@ -291,7 +291,7 @@ export function findKnownVenue(query) {
  */
 export function findKnownVenues(query, limit = 4) {
   if (!query || typeof query !== 'string') return [];
-  const q = query.trim().toLowerCase().replace(/[\s\u3000]+/g, '');
+  const q = query.trim().normalize('NFKC').toLowerCase().replace(/[\s\u3000]+/g, '');
   if (q.length < 2) return [];
   if (/駅$/.test(q)) return [];
 
@@ -303,7 +303,7 @@ export function findKnownVenues(query, limit = 4) {
     let isHit = false;
 
     for (const kw of venue.keywords) {
-      const cleanKw = kw.toLowerCase().replace(/[\s\u3000]+/g, '');
+      const cleanKw = kw.normalize('NFKC').toLowerCase().replace(/[\s\u3000]+/g, '');
       if (q.includes(cleanKw) || cleanKw.includes(q)) {
         isHit = true;
         break;
@@ -470,6 +470,7 @@ export function saveCachedCoords(address, geoData) {
     lon: geoData.lon,
     displayName: geoData.displayName || address.trim(),
     candidates: geoData.candidates || [],
+    isFallback: Boolean(geoData.isFallback),
     savedAt: Date.now(),
   };
 
@@ -499,15 +500,16 @@ export function saveCachedCoords(address, geoData) {
  */
 export function extractMunicipality(text) {
   if (!text || typeof text !== 'string') return null;
-  // カッコ内の住所: 例 "(茨城県つくば市)" -> "茨城県つくば市"
+  const prefCityRegex = /(?:北海道|東京都|(?:京都|大阪)府|.{2,3}県)?([^0-9\s]+?[市区町村])/;
+  // カッコ内の住所: 例 "(茨城県つくば市)", "(神奈川県横浜市)" -> "神奈川県横浜市"
   const parenMatch = text.match(/[\(（]([^()（）]+)[\)）]/);
   if (parenMatch) {
     const inside = parenMatch[1];
-    const muniMatch = inside.match(/(.{2,3}[都道府県])?([^0-9\s]+?[市区町村])/);
+    const muniMatch = inside.match(prefCityRegex);
     if (muniMatch) return muniMatch[0];
   }
   // テキスト全体の市区町村
-  const generalMatch = text.match(/(.{2,3}[都道府県])?([^0-9\s]+?[市区町村])/);
+  const generalMatch = text.match(prefCityRegex);
   if (generalMatch) return generalMatch[0];
   return null;
 }
@@ -633,13 +635,14 @@ export async function geocodeAddress(address, options = {}) {
   }
 
   // 0-b. キャッシュに保存されている場合は外部通信なしで即座に返却
+  // ※ Google Maps APIキーが有効な場合、粗いフォールバックキャッシュ（地域代表・母体施設）はスキップして再解決
+  const gmapsKey = getSavedGoogleMapsApiKey();
   const cached = getCachedCoords(trimmed);
-  if (cached) {
+  if (cached && !(cached.isFallback && gmapsKey)) {
     return cached;
   }
 
   // 1. Google Maps APIキーが設定されている場合は Google Maps を最優先実行！
-  const gmapsKey = getSavedGoogleMapsApiKey();
   if (gmapsKey) {
     try {
       const gResult = await geocodeWithGoogleMaps(trimmed, gmapsKey);
@@ -838,6 +841,7 @@ export async function geocodeAddress(address, options = {}) {
       finalResult = {
         ...finalResult,
         displayName: `${finalResult.displayName} (地域代表)`,
+        isFallback: true,
       };
     }
   }
@@ -856,6 +860,7 @@ export async function geocodeAddress(address, options = {}) {
       finalResult = {
         ...finalResult,
         displayName: `${finalResult.displayName} (母体施設)`,
+        isFallback: true,
       };
     }
   }

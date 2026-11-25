@@ -37,6 +37,7 @@ export default function ScheduleImageImporter({
   onSaveToSchedules,
   isOpen: controlledIsOpen,
   onToggleOpen,
+  hideHeader = false,
 }) {
   const [localIsOpen, setLocalIsOpen] = useState(false);
   const isOpen = controlledIsOpen !== undefined ? controlledIsOpen : localIsOpen;
@@ -188,48 +189,56 @@ export default function ScheduleImageImporter({
   };
 
   return (
-    <section className="bg-gradient-to-br from-emerald-50 via-teal-50 to-sky-50 rounded-3xl p-4 shadow-sm border border-emerald-200/80 space-y-3">
+    <section
+      className={
+        hideHeader
+          ? 'space-y-3'
+          : 'bg-gradient-to-br from-emerald-50 via-teal-50 to-sky-50 rounded-3xl p-4 shadow-sm border border-emerald-200/80 space-y-3'
+      }
+    >
       {/* 折りたたみヘッダー */}
-      <button
-        type="button"
-        onClick={toggleOpen}
-        aria-expanded={isOpen}
-        className="w-full flex items-center justify-between text-left select-none"
-      >
-        <div className="flex items-center gap-2.5">
-          <div className="w-9 h-9 rounded-2xl bg-gradient-to-tr from-emerald-600 to-teal-500 text-white flex items-center justify-center shadow-md">
-            <Camera className="w-5 h-5" />
-          </div>
-          <div>
-            <div className="flex items-center gap-1.5">
-              <h2 className="text-sm font-black text-slate-900 leading-tight">
-                日程表画像から一発逆算
-              </h2>
-              <span className="bg-emerald-600 text-white text-[10px] font-black px-1.5 py-0.5 rounded-full flex items-center gap-0.5 shadow-sm">
-                <Sparkles className="w-2.5 h-2.5" /> AI解析
-              </span>
+      {!hideHeader && (
+        <button
+          type="button"
+          onClick={toggleOpen}
+          aria-expanded={isOpen}
+          className="w-full flex items-center justify-between text-left select-none"
+        >
+          <div className="flex items-center gap-2.5">
+            <div className="w-9 h-9 rounded-2xl bg-gradient-to-tr from-emerald-600 to-teal-500 text-white flex items-center justify-center shadow-md">
+              <Camera className="w-5 h-5" />
             </div>
-            <p className="text-[11px] text-slate-600 font-medium">
-              LINEの日程スクショやPDFから予定を選んで集合時間を逆算
-            </p>
+            <div>
+              <div className="flex items-center gap-1.5">
+                <h2 className="text-sm font-black text-slate-900 leading-tight">
+                  日程表画像から一発逆算
+                </h2>
+                <span className="bg-emerald-600 text-white text-[10px] font-black px-1.5 py-0.5 rounded-full flex items-center gap-0.5 shadow-sm">
+                  <Sparkles className="w-2.5 h-2.5" /> AI解析
+                </span>
+              </div>
+              <p className="text-[11px] text-slate-600 font-medium">
+                LINEの日程スクショやPDFから予定を選んで集合時間を逆算
+              </p>
+            </div>
           </div>
-        </div>
 
-        <div className="flex items-center gap-2">
-          {parsedEvents.length > 0 && !isOpen && (
-            <span className="text-[11px] font-extrabold text-emerald-800 bg-emerald-100 px-2 py-0.5 rounded-full">
-              {parsedEvents.length}件検出済
+          <div className="flex items-center gap-2">
+            {parsedEvents.length > 0 && !isOpen && (
+              <span className="text-[11px] font-extrabold text-emerald-800 bg-emerald-100 px-2 py-0.5 rounded-full">
+                {parsedEvents.length}件検出済
+              </span>
+            )}
+            <span className="p-1.5 text-slate-400 rounded-full" aria-hidden="true">
+              {isOpen ? <ChevronUp className="w-5 h-5" /> : <ChevronDown className="w-5 h-5" />}
             </span>
-          )}
-          <span className="p-1.5 text-slate-400 rounded-full" aria-hidden="true">
-            {isOpen ? <ChevronUp className="w-5 h-5" /> : <ChevronDown className="w-5 h-5" />}
-          </span>
-        </div>
-      </button>
+          </div>
+        </button>
+      )}
 
       {/* 開閉コンテンツ */}
-      {isOpen && (
-        <div className="pt-2 space-y-3 border-t border-emerald-200/60">
+      {(isOpen || hideHeader) && (
+        <div className={hideHeader ? 'space-y-3' : 'pt-2 space-y-3 border-t border-emerald-200/60'}>
           {/* APIキー設定リンク・状態 */}
           <div className="flex items-center justify-between text-[11px] px-1">
             <button

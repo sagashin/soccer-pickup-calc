@@ -182,7 +182,14 @@ export async function fetchNearbyStations(lat, lon, radiusMeters = 3500) {
 /**
  * Google Maps DirectionsService による電車ルート検索
  */
-export async function fetchGoogleTransitRoute({ origin, destination, arrivalDate, apiKey }) {
+export async function fetchGoogleTransitRoute({
+  origin,
+  destination,
+  originCoords,
+  destCoords,
+  arrivalDate,
+  apiKey,
+}) {
   const key = apiKey || getSavedGoogleMapsApiKey();
   if (!key) {
     throw new Error('Google Maps APIキーが設定されていません。');
@@ -195,24 +202,47 @@ export async function fetchGoogleTransitRoute({ origin, destination, arrivalDate
 
   const directionsService = new maps.DirectionsService();
 
+  const originParam =
+    originCoords?.lat != null && originCoords?.lon != null
+      ? new maps.LatLng(originCoords.lat, originCoords.lon)
+      : origin;
+  const destParam =
+    destCoords?.lat != null && destCoords?.lon != null
+      ? new maps.LatLng(destCoords.lat, destCoords.lon)
+      : destination;
+
+  const now = Date.now();
+  const parsedArrival = arrivalDate instanceof Date ? arrivalDate : new Date(arrivalDate);
+  const safeArrivalDate =
+    !isNaN(parsedArrival.getTime()) && parsedArrival.getTime() > now
+      ? parsedArrival
+      : new Date(now + 5 * 60 * 1000);
+
   return new Promise((resolve, reject) => {
+    let done = false;
     const timer = setTimeout(() => {
-      reject(new Error('電車ルートの検索がタイムアウトしました。'));
+      if (!done) {
+        done = true;
+        reject(new Error('電車ルートの検索がタイムアウトしました。'));
+      }
     }, 5000);
 
     const request = {
-      origin,
-      destination,
+      origin: originParam,
+      destination: destParam,
       travelMode: maps.TravelMode.TRANSIT,
       transitOptions: {
-        arrivalTime: arrivalDate instanceof Date ? arrivalDate : new Date(arrivalDate),
+        arrivalTime: safeArrivalDate,
         routingPreference: maps.TransitRoutePreference?.FEWER_TRANSFERS || undefined,
       },
       region: 'JP',
     };
 
-    directionsService.route(request, (response, status) => {
-      clearTimeout(timer);
+    try {
+      directionsService.route(request, (response, status) => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
 
       if (status === maps.DirectionsStatus.OK && response?.routes?.length > 0) {
         const route = response.routes[0];
@@ -298,6 +328,13 @@ export async function fetchGoogleTransitRoute({ origin, destination, arrivalDate
           )
         );
       }
-    });
+      });
+    } catch (err) {
+      if (!done) {
+        done = true;
+        clearTimeout(timer);
+        reject(err);
+      }
+    }
   });
 }

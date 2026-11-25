@@ -104,6 +104,25 @@ export async function fetchWeatherByCoords(latNum, lonNum, dateIso, venueLabel =
   return extractDayWeather(daily, dateIso, venueLabel);
 }
 
+function getTodayJstIso() {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Tokyo',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date());
+}
+
+function getCachedEventWeather(cacheKey) {
+  const entry = eventWeatherMemoryCache.get(cacheKey);
+  if (!entry) return null;
+  if (Date.now() - entry.fetchedAt >= FORECAST_TTL_MS) {
+    eventWeatherMemoryCache.delete(cacheKey);
+    return null;
+  }
+  return entry.data;
+}
+
 /**
  * 指定会場と日付の天気を取得（キャッシュ & 範囲外安全制御）
  * @param {string} venue 会場名
@@ -117,15 +136,17 @@ export async function fetchEventWeather(venue, dateIso) {
     return null;
   }
 
-  // 日付の有効性チェック（今日〜15日先までがOpen-Meteo forecast_days=16の対応範囲）
+  // 日付の有効性チェック（Asia/Tokyo基準のYYYY-MM-DD比較: 今日〜15日先までがforecast_days=16の対応範囲）
   try {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dateIso)) return null;
+    const todayJst = getTodayJstIso();
+    const [ty, tm, td] = todayJst.split('-').map(Number);
     const [y, m, d] = dateIso.split('-').map(Number);
-    const target = new Date(y, m - 1, d);
-    if (isNaN(target.getTime())) return null;
+    const todayUtcMs = Date.UTC(ty, tm - 1, td);
+    const targetUtcMs = Date.UTC(y, m - 1, d);
+    if (Number.isNaN(targetUtcMs)) return null;
 
-    const diffDays = Math.round((target - today) / (1000 * 60 * 60 * 24));
+    const diffDays = Math.round((targetUtcMs - todayUtcMs) / (1000 * 60 * 60 * 24));
     if (diffDays < 0 || diffDays > 15) {
       return null;
     }
@@ -134,8 +155,9 @@ export async function fetchEventWeather(venue, dateIso) {
   }
 
   const cacheKey = `${trimmedVenue.toLowerCase()}_${dateIso}`;
-  if (eventWeatherMemoryCache.has(cacheKey)) {
-    return eventWeatherMemoryCache.get(cacheKey);
+  const cachedWeather = getCachedEventWeather(cacheKey);
+  if (cachedWeather) {
+    return cachedWeather;
   }
 
   // 座標の取得（ビルトイン辞書 → キャッシュ → ジオコーディング）
@@ -150,7 +172,7 @@ export async function fetchEventWeather(venue, dateIso) {
   const weather = await fetchWeatherByCoords(coords.lat, coords.lon, dateIso, trimmedVenue);
   if (!weather || weather.unavailable) return null;
 
-  eventWeatherMemoryCache.set(cacheKey, weather);
+  eventWeatherMemoryCache.set(cacheKey, { data: weather, fetchedAt: Date.now() });
   return weather;
 }
 
@@ -159,7 +181,7 @@ export async function fetchEventWeather(venue, dateIso) {
  */
 export function useEventWeather(venue, dateIso) {
   const cacheKey = venue && dateIso ? `${venue.trim().toLowerCase()}_${dateIso}` : null;
-  const initialData = cacheKey ? eventWeatherMemoryCache.get(cacheKey) || null : null;
+  const initialData = cacheKey ? getCachedEventWeather(cacheKey) : null;
 
   const [weather, setWeather] = useState(initialData);
   const [loading, setLoading] = useState(!initialData && Boolean(cacheKey));
@@ -172,7 +194,7 @@ export function useEventWeather(venue, dateIso) {
     }
 
     let isMounted = true;
-    const currentCached = eventWeatherMemoryCache.get(`${venue.trim().toLowerCase()}_${dateIso}`);
+    const currentCached = getCachedEventWeather(`${venue.trim().toLowerCase()}_${dateIso}`);
     if (currentCached) {
       setWeather(currentCached);
       setLoading(false);

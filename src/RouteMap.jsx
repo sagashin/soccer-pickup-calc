@@ -334,7 +334,7 @@ export default function RouteMap({
     const marker = spotMarkersMapRef.current.get(selectedSpotId);
     if (marker) {
       const map = mapInstanceRef.current;
-      map.panTo(marker.getLatLng(), { animate: true, duration: 0.5 });
+      map.setView(marker.getLatLng(), Math.max(map.getZoom(), 16), { animate: true, duration: 0.5 });
       marker.openPopup();
     }
   }, [selectedSpotId]);

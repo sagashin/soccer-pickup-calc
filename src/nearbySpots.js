@@ -65,14 +65,14 @@ function categorizeParking(name, rawTags = {}) {
   let badgeLabel = '一般駐車場';
   let badgeColor = 'bg-slate-100 text-slate-700 border-slate-300';
 
-  if (isParkFacility) {
-    type = 'facility';
-    badgeLabel = '公園・施設駐車場';
-    badgeColor = 'bg-emerald-100 text-emerald-800 border-emerald-300';
-  } else if (isCoinParking) {
+  if (isCoinParking) {
     type = 'coin';
     badgeLabel = 'コインパーキング';
     badgeColor = 'bg-amber-100 text-amber-800 border-amber-300';
+  } else if (isParkFacility) {
+    type = 'facility';
+    badgeLabel = '公園・施設駐車場';
+    badgeColor = 'bg-emerald-100 text-emerald-800 border-emerald-300';
   }
 
   let feeLabel = null;

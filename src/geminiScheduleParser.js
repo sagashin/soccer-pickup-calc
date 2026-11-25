@@ -589,6 +589,12 @@ async function tryGenerateWithModel({
   }
 
   const data = await res.json();
+  const finishReason = data.candidates?.[0]?.finishReason;
+  if (finishReason === 'MAX_TOKENS') {
+    throw new Error(
+      'AI解析の出力が上限に達して途中で切れました（MAX_TOKENS）。画像を分割するか小さくして再試行してください。'
+    );
+  }
   const responseParts = data.candidates?.[0]?.content?.parts || [];
   const textPart =
     responseParts.find((p) => typeof p.text === 'string' && !p.thought) ||
@@ -605,9 +611,17 @@ async function tryGenerateWithModel({
     .replace(/\s*```$/i, '')
     .trim();
 
+  let parsedJson;
+  try {
+    parsedJson = JSON.parse(cleanJsonStr);
+  } catch (parseErr) {
+    parseErr.isJsonSyntaxError = true;
+    throw parseErr;
+  }
+
   return {
     fallback: false,
-    result: JSON.parse(cleanJsonStr),
+    result: parsedJson,
   };
 }
 
@@ -615,7 +629,8 @@ function isFatalGeminiError(err) {
   return Boolean(
     err?.message?.includes('利用上限') ||
       err?.message?.includes('APIキーが無効') ||
-      err?.message?.includes('認証エラー')
+      err?.message?.includes('認証エラー') ||
+      err?.message?.includes('MAX_TOKENS')
   );
 }
 
@@ -646,7 +661,19 @@ export async function generateGeminiJson({ prompt, base64Data, mimeType, apiKey,
   );
 
   let lastError = null;
+  let syntaxErrorCount = 0;
   const triedV1Beta = new Set();
+
+  const handleAttemptError = (err) => {
+    if (isFatalGeminiError(err)) throw err;
+    if (err instanceof SyntaxError || err?.isJsonSyntaxError) {
+      syntaxErrorCount += 1;
+      if (syntaxErrorCount >= 2) {
+        throw new Error('AI応答のJSON解析に失敗しました。画像を鮮明にするか時間をおいて再試行してください。');
+      }
+    }
+    lastError = err;
+  };
 
   // 1. 最速経路: ListModelsを待たずキャッシュ済みモデル/推奨モデルへ v1beta で直接送信
   for (const model of staticCandidates) {
@@ -669,8 +696,7 @@ export async function generateGeminiJson({ prompt, base64Data, mimeType, apiKey,
       }
       lastError = attempt.error;
     } catch (err) {
-      if (isFatalGeminiError(err)) throw err;
-      lastError = err;
+      handleAttemptError(err);
     }
   }
 
@@ -694,8 +720,7 @@ export async function generateGeminiJson({ prompt, base64Data, mimeType, apiKey,
       }
       lastError = attempt.error;
     } catch (err) {
-      if (isFatalGeminiError(err)) throw err;
-      lastError = err;
+      handleAttemptError(err);
     }
   }
 
@@ -716,8 +741,7 @@ export async function generateGeminiJson({ prompt, base64Data, mimeType, apiKey,
       }
       lastError = attempt.error;
     } catch (err) {
-      if (isFatalGeminiError(err)) throw err;
-      lastError = err;
+      handleAttemptError(err);
     }
   }
 
@@ -735,12 +759,14 @@ export async function parseScheduleImageWithGemini(base64Data, mimeType, apiKey,
     throw new Error('Gemini APIキーが設定されていません。');
   }
 
-  const currentYear = new Date().getFullYear();
+  const nowDate = new Date();
+  const currentYear = nowDate.getFullYear();
+  const currentMonth = nowDate.getMonth() + 1;
   const mode = normalizeParseMode(options?.mode);
   const prompt = `あなたは日本のサッカー日程表解析AIです。画像またはPDFの予定をすべて抽出し、JSONのみで返してください。
 
 【項目仕様】
-- dateIso: "YYYY-MM-DD"（年が不明なら ${currentYear} を補完）
+- dateIso: "YYYY-MM-DD"（年が不明な場合は現在 ${currentYear}年${currentMonth}月 を基準に補完し、現在月より大きく前の月［例: 12月に1〜3月］は翌年 ${currentYear + 1}年 として補完）
 - title: 試合名・対戦相手・活動名（例: "関東L vs ジェファ", "浦和美園 B"）
 - category: "公式戦" | "練習試合" | "練習" | "応援" | "カップ戦" | "OFF" など
 - time: 24時間表記 "HH:mm"（時刻記載がなければ ""）
@@ -784,7 +810,7 @@ export async function parseScheduleImageWithGemini(base64Data, mimeType, apiKey,
       isKickoff: Boolean(ev?.isKickoff),
       venue: String(ev?.venue || '').trim(),
       rawText: String(ev?.rawText || ''),
-      id: `ai-event-${Date.now()}-${idx}`,
+      id: `ai-event-${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 6)}`,
     };
   });
 }

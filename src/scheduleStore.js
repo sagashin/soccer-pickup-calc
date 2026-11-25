@@ -188,33 +188,40 @@ export function mergeImportedEvents(importedEvents, defaultMeetingLeadMinutes = 
       });
     }
 
-    if (matchIndex >= 0) {
-      const existing = updatedList[matchIndex];
-      if (existing.updatedAt && imp.updatedAt && existing.updatedAt > imp.updatedAt) {
-        return; // ローカルの編集の方が新しいため上書きしない
-      }
+    const impUpdatedAt = Number(imp.updatedAt) || 0;
+    const existing = matchIndex >= 0 ? updatedList[matchIndex] : null;
+    const existingUpdatedAt = Number(existing?.updatedAt) || 0;
+    if (existing && existingUpdatedAt > impUpdatedAt) {
+      return; // ローカルの編集の方が新しいため上書きしない（imp.updatedAt未指定の共有データも保護）
     }
+    const isCloudSyncNewer = Boolean(existing) && impUpdatedAt > existingUpdatedAt;
 
     const now = Date.now();
     const normalizedEvent = {
-      id: matchIndex >= 0 ? updatedList[matchIndex].id : (imp.id || `evt_${now}_${Math.random().toString(36).slice(2, 7)}`),
+      id: existing ? existing.id : (imp.id || `evt_${now}_${Math.random().toString(36).slice(2, 7)}`),
       dateIso: imp.dateIso,
       dateLabel: formattedDateLabel,
-      title: imp.title || '試合 / 練習',
+      title: isCloudSyncNewer ? (imp.title ?? existing.title ?? '試合 / 練習') : (imp.title || '試合 / 練習'),
       category: imp.category || '公式戦',
       kickoffTime: imp.isKickoff ? kickoff : (imp.kickoffTime || kickoff),
       isKickoff: imp.isKickoff ?? true,
       meetingTime: meetingTime,
       meetingLeadMinutes: lead,
-      venue: imp.venue || '',
-      venueAddress: imp.venueAddress || imp.venue || '',
-      opponent: imp.opponent || '',
+      venue: isCloudSyncNewer ? (imp.venue ?? existing.venue ?? '') : (imp.venue || ''),
+      venueAddress: isCloudSyncNewer
+        ? (imp.venueAddress ?? imp.venue ?? existing.venueAddress ?? '')
+        : (imp.venueAddress || imp.venue || ''),
+      opponent: isCloudSyncNewer ? (imp.opponent ?? existing.opponent ?? '') : (imp.opponent || ''),
       notes: imp.rawText
         ? `読み取り元: ${imp.rawText}`
-        : (imp.notes || (matchIndex >= 0 ? updatedList[matchIndex].notes || '' : '')),
-      rawText: imp.rawText || (matchIndex >= 0 ? updatedList[matchIndex].rawText || '' : ''),
-      createdAt: matchIndex >= 0 ? updatedList[matchIndex].createdAt : (imp.createdAt || now),
-      updatedAt: Math.max(matchIndex >= 0 ? (updatedList[matchIndex].updatedAt || 0) : 0, imp.updatedAt || now),
+        : isCloudSyncNewer
+          ? (imp.notes ?? existing.notes ?? '')
+          : (imp.notes || (existing ? existing.notes || '' : '')),
+      rawText: isCloudSyncNewer
+        ? (imp.rawText ?? existing.rawText ?? '')
+        : (imp.rawText || (existing ? existing.rawText || '' : '')),
+      createdAt: existing ? existing.createdAt : (imp.createdAt || now),
+      updatedAt: Math.max(existingUpdatedAt, impUpdatedAt || now),
     };
 
     if (matchIndex >= 0) {

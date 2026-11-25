@@ -224,6 +224,7 @@ export async function geocodeWithGoogleMaps(query, apiKey) {
       service.textSearch(
         {
           query: trimmed,
+          region: 'JP',
         },
         (results, status) => {
           if (done) return;
@@ -325,6 +326,8 @@ export async function geocodeWithGoogleMaps(query, apiKey) {
   });
 }
 
+let placesNewSessionToken = null;
+
 /**
  * Places API (New): AutocompleteSuggestion による入力サジェスト候補の取得
  */
@@ -334,9 +337,14 @@ async function getSuggestionsWithPlacesNew(query, maps) {
       const placesLib = await maps.importLibrary('places');
       const AutoClass = placesLib?.AutocompleteSuggestion;
       if (AutoClass && typeof AutoClass.fetchAutocompleteSuggestions === 'function') {
+        if (!placesNewSessionToken && placesLib?.AutocompleteSessionToken) {
+          placesNewSessionToken = new placesLib.AutocompleteSessionToken();
+        }
         const response = await AutoClass.fetchAutocompleteSuggestions({
           input: query,
           region: 'jp',
+          language: 'ja',
+          ...(placesNewSessionToken ? { sessionToken: placesNewSessionToken } : {}),
         });
 
         if (response?.suggestions && Array.isArray(response.suggestions) && response.suggestions.length > 0) {
@@ -443,6 +451,7 @@ export async function getCoordsByPlaceId(placeId, apiKey) {
       if (PlaceClass) {
         const place = new PlaceClass({ id: placeId });
         await place.fetchFields({ fields: ['displayName', 'location', 'formattedAddress'] });
+        placesNewSessionToken = null;
         const lat =
           typeof place.location?.lat === 'function' ? place.location.lat() : place.location?.lat;
         const lon =
@@ -555,87 +564,113 @@ async function fetchWithRoutesApiV2({ originCoords, destCoords, arrivalDate, api
     depTime = new Date(now.getTime() + 3 * 60 * 1000);
   }
 
-  const url = 'https://routes.googleapis.com/directions/v2:computeRoutes';
-  const body = {
-    origin: {
-      location: {
-        latLng: {
-          latitude: originCoords.lat,
-          longitude: originCoords.lon,
+  const requestRoutes = async (depDate) => {
+    const url = 'https://routes.googleapis.com/directions/v2:computeRoutes';
+    const body = {
+      origin: {
+        location: {
+          latLng: {
+            latitude: originCoords.lat,
+            longitude: originCoords.lon,
+          },
         },
       },
-    },
-    destination: {
-      location: {
-        latLng: {
-          latitude: destCoords.lat,
-          longitude: destCoords.lon,
+      destination: {
+        location: {
+          latLng: {
+            latitude: destCoords.lat,
+            longitude: destCoords.lon,
+          },
         },
       },
-    },
-    travelMode: 'DRIVE',
-    routingPreference: 'TRAFFIC_AWARE_OPTIMAL',
-    departureTime: depTime.toISOString(),
-    languageCode: 'ja',
-    units: 'METRIC',
+      travelMode: 'DRIVE',
+      routingPreference: 'TRAFFIC_AWARE_OPTIMAL',
+      departureTime: depDate.toISOString(),
+      languageCode: 'ja',
+      units: 'METRIC',
+    };
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8000);
+    let res;
+    try {
+      res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Goog-Api-Key': apiKey,
+          'X-Goog-FieldMask':
+            'routes.duration,routes.staticDuration,routes.distanceMeters,routes.description,routes.polyline.encodedPolyline',
+        },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timeout);
+    }
+
+    if (!res.ok) {
+      const errText = await res.text();
+      console.warn('Routes API HTTP Error:', res.status, errText);
+      throw new Error(`Routes API Error: ${res.status}`);
+    }
+
+    const data = await res.json();
+    if (!data?.routes || data.routes.length === 0) {
+      throw new Error('Routes API: ルートが見つかりませんでした');
+    }
+
+    const route = data.routes[0];
+    const parseSec = (str) => {
+      if (!str) return 0;
+      return parseInt(str.replace('s', ''), 10) || 0;
+    };
+
+    const normalSec = parseSec(route.staticDuration) || parseSec(route.duration);
+    const trafficSec = parseSec(route.duration) || normalSec;
+    const distanceMeters = route.distanceMeters || 0;
+
+    const minMinutes = Math.max(1, Math.round(normalSec / 60));
+    const maxMinutes = Math.max(minMinutes, Math.round(trafficSec / 60));
+
+    let geometry = null;
+    if (route.polyline?.encodedPolyline) {
+      const coords = decodePolylinePoints(route.polyline.encodedPolyline);
+      if (coords.length > 0) {
+        geometry = {
+          type: 'LineString',
+          coordinates: coords,
+        };
+      }
+    }
+
+    return {
+      minMinutes,
+      maxMinutes,
+      standardMinutes: Math.round((minMinutes + maxMinutes) / 2),
+      distanceKm: (distanceMeters / 1000).toFixed(1),
+      summary: route.description || '',
+      isGoogleRealtime: true,
+      source: 'routes-api-v2',
+      geometry,
+    };
   };
 
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Goog-Api-Key': apiKey,
-      'X-Goog-FieldMask':
-        'routes.duration,routes.staticDuration,routes.distanceMeters,routes.description,routes.polyline.encodedPolyline',
-    },
-    body: JSON.stringify(body),
-  });
+  const firstPass = await requestRoutes(depTime);
 
-  if (!res.ok) {
-    const errText = await res.text();
-    console.warn('Routes API HTTP Error:', res.status, errText);
-    throw new Error(`Routes API Error: ${res.status}`);
-  }
-
-  const data = await res.json();
-  if (!data?.routes || data.routes.length === 0) {
-    throw new Error('Routes API: ルートが見つかりませんでした');
-  }
-
-  const route = data.routes[0];
-  const parseSec = (str) => {
-    if (!str) return 0;
-    return parseInt(str.replace('s', ''), 10) || 0;
-  };
-
-  const normalSec = parseSec(route.staticDuration) || parseSec(route.duration);
-  const trafficSec = parseSec(route.duration) || normalSec;
-  const distanceMeters = route.distanceMeters || 0;
-
-  const minMinutes = Math.max(1, Math.round(normalSec / 60));
-  const maxMinutes = Math.max(minMinutes, Math.round(trafficSec / 60));
-
-  let geometry = null;
-  if (route.polyline?.encodedPolyline) {
-    const coords = decodePolylinePoints(route.polyline.encodedPolyline);
-    if (coords.length > 0) {
-      geometry = {
-        type: 'LineString',
-        coordinates: coords,
-      };
+  // 初回所要時間が仮定の45分と15分以上ズレる場合、正確な出発時刻で1回だけ再計算
+  if (Math.abs(firstPass.maxMinutes - 45) >= 15 && targetDate.getTime() > now.getTime()) {
+    const refinedDepTime = new Date(targetDate.getTime() - firstPass.maxMinutes * 60 * 1000);
+    if (refinedDepTime.getTime() > now.getTime()) {
+      try {
+        return await requestRoutes(refinedDepTime);
+      } catch {
+        // 再計算失敗時は初回結果を採用
+      }
     }
   }
 
-  return {
-    minMinutes,
-    maxMinutes,
-    standardMinutes: Math.round((minMinutes + maxMinutes) / 2),
-    distanceKm: (distanceMeters / 1000).toFixed(1),
-    summary: route.description || '',
-    isGoogleRealtime: true,
-    source: 'routes-api-v2',
-    geometry,
-  };
+  return firstPass;
 }
 
 /**

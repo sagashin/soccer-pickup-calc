@@ -1378,8 +1378,32 @@ export default function TeamVaultView({
           )}
 
           {/* 記録カード一覧 */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            {filteredFitness.map((rec) => {
+          {filteredFitness.length === 0 ? (
+            <div className="bg-white rounded-3xl p-8 text-center border border-dashed border-slate-300 space-y-2.5">
+              <p className="text-xs font-bold text-slate-500">該当する体力測定記録がありません</p>
+              <div className="flex items-center justify-center gap-3 flex-wrap">
+                {fitnessEventFilter !== 'すべて' && (
+                  <button
+                    type="button"
+                    onClick={() => setFitnessEventFilter('すべて')}
+                    className="text-xs font-extrabold text-slate-600 bg-slate-100 hover:bg-slate-200 px-3 py-1.5 rounded-xl transition"
+                  >
+                    フィルタを解除
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => handleOpenFitnessModal()}
+                  className="text-xs font-extrabold text-emerald-700 hover:underline inline-flex items-center gap-1"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>最初の測定記録を追加する</span>
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              {filteredFitness.map((rec) => {
               const isImproved =
                 rec.diffFromPrev !== null &&
                 (rec.isTimeBased ? rec.diffFromPrev < 0 : rec.diffFromPrev > 0);
@@ -1472,7 +1496,8 @@ export default function TeamVaultView({
                 </div>
               );
             })}
-          </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -1519,8 +1544,35 @@ export default function TeamVaultView({
             </div>
           </div>
 
-          <div className="space-y-3">
-            {filteredCoachNotes.map((note) => (
+          {filteredCoachNotes.length === 0 ? (
+            <div className="bg-white rounded-3xl p-8 text-center border border-dashed border-slate-300 space-y-2.5">
+              <p className="text-xs font-bold text-slate-500">該当するコーチ助言がありません</p>
+              <div className="flex items-center justify-center gap-3 flex-wrap">
+                {(coachCategoryFilter !== 'すべて' || coachSearch.trim()) && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCoachCategoryFilter('すべて');
+                      setCoachSearch('');
+                    }}
+                    className="text-xs font-extrabold text-slate-600 bg-slate-100 hover:bg-slate-200 px-3 py-1.5 rounded-xl transition"
+                  >
+                    検索・フィルタをクリア
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => handleOpenCoachModal()}
+                  className="text-xs font-extrabold text-emerald-700 hover:underline inline-flex items-center gap-1"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>最初の助言・リンクを追加する</span>
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {filteredCoachNotes.map((note) => (
               <div
                 key={note.id}
                 className="bg-white rounded-3xl p-4 shadow-sm border border-slate-200/90 space-y-3"
@@ -1618,7 +1670,8 @@ export default function TeamVaultView({
                 </div>
               </div>
             ))}
-          </div>
+            </div>
+          )}
         </div>
       )}
 

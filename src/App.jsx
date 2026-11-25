@@ -832,6 +832,16 @@ export default function App() {
     };
   }, [showFamilyToast]);
 
+  // 画像インポーターモーダルのEscapeキー閉じ対応
+  useEffect(() => {
+    if (!isScheduleImporterOpen) return;
+    const onKeyDown = (e) => {
+      if (e.key === 'Escape') setIsScheduleImporterOpen(false);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [isScheduleImporterOpen]);
+
   // タブ切り替え時は常に確実に画面最上部（ヘッダー・出発カード）へスクロール
   useEffect(() => {
     window.scrollTo(0, 0);
@@ -1104,6 +1114,8 @@ export default function App() {
           transitData = await fetchGoogleTransitRoute({
             origin: o,
             destination: d,
+            originCoords: originGeo?.lat != null && originGeo?.lon != null ? { lat: originGeo.lat, lon: originGeo.lon } : null,
+            destCoords: destGeo?.lat != null && destGeo?.lon != null ? { lat: destGeo.lat, lon: destGeo.lon } : null,
             arrivalDate: arrDate,
             apiKey: gKey,
           }).catch((tErr) => {
@@ -1372,6 +1384,10 @@ export default function App() {
 
   const handleDeletePreset = (id, e) => {
     e.stopPropagation();
+    const target = presets.find((p) => p.id === id);
+    if (!window.confirm(`よく行く会場「${target?.name || 'この会場'}」を削除してもよろしいですか？`)) {
+      return;
+    }
     const updated = presets.filter((p) => p.id !== id);
     setPresets(updated);
     if (selectedPresetId === id) {
@@ -2760,6 +2776,10 @@ export default function App() {
                             onClick={() => {
                               handleSaveOriginFeedback();
                               setIsOriginEditing(false);
+                              const trimmedOrigin = origin.trim();
+                              if (trimmedOrigin && trimmedOrigin !== lastGeoRef.current.origin) {
+                                calculateRoute(trimmedOrigin, destination);
+                              }
                             }}
                             className="text-xs font-bold text-white bg-sky-600 hover:bg-sky-700 px-3 py-1 rounded-lg"
                           >
@@ -2901,7 +2921,15 @@ export default function App() {
 
               {/* 📸 画像インポーター（全画面ポップアップモーダル：スクロール不要で目の前に表示） */}
               {isScheduleImporterOpen && (
-                <div className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4 overflow-y-auto">
+                <div
+                  role="dialog"
+                  aria-modal="true"
+                  aria-labelledby="schedule-importer-modal-title"
+                  onClick={(e) => {
+                    if (e.target === e.currentTarget) setIsScheduleImporterOpen(false);
+                  }}
+                  className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4 overflow-y-auto"
+                >
                   <div className="bg-white rounded-3xl max-w-lg w-full max-h-[92vh] overflow-y-auto p-4 sm:p-5 shadow-2xl border border-slate-200 space-y-3">
                     <div className="flex items-center justify-between pb-2 border-b border-slate-100">
                       <div className="flex items-center gap-2">
@@ -2909,7 +2937,7 @@ export default function App() {
                           <Camera className="w-4 h-4" />
                         </div>
                         <div>
-                          <h3 className="text-sm font-black text-slate-900 leading-tight">
+                          <h3 id="schedule-importer-modal-title" className="text-sm font-black text-slate-900 leading-tight">
                             日程表画像から一発解析・カレンダー蓄積
                           </h3>
                           <p className="text-[10px] font-bold text-slate-500">
@@ -2920,6 +2948,7 @@ export default function App() {
                       <button
                         type="button"
                         onClick={() => setIsScheduleImporterOpen(false)}
+                        aria-label="閉じる"
                         className="w-8 h-8 rounded-xl hover:bg-slate-100 flex items-center justify-center text-slate-400 hover:text-slate-700 font-bold transition"
                         title="閉じる"
                       >
@@ -2931,6 +2960,7 @@ export default function App() {
                       <Suspense fallback={<LazyTabFallback />}>
                         <ScheduleImageImporter
                           isOpen={true}
+                          hideHeader={true}
                           onToggleOpen={() => setIsScheduleImporterOpen((p) => !p)}
                           onApplySchedule={handleApplySchedule}
                           onSaveToSchedules={() => {

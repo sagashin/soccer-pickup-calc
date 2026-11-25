@@ -102,17 +102,17 @@ export async function fetchNearbyStations(lat, lon, radiusMeters = 3500) {
   if (!lat || !lon) return [];
 
   const overpassQuery = `
-    [out:json][timeout:5];
+    [out:json][timeout:6];
     (
-      node["railway"="station"](around:${radiusMeters},${lat},${lon});
-      node["railway"="halt"](around:${radiusMeters},${lat},${lon});
-      node["station"="subway"](around:${radiusMeters},${lat},${lon});
+      nwr["railway"="station"](around:${radiusMeters},${lat},${lon});
+      nwr["railway"="halt"](around:${radiusMeters},${lat},${lon});
+      nwr["station"="subway"](around:${radiusMeters},${lat},${lon});
     );
-    out 5;
+    out center;
   `;
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 4000);
+  const timeout = setTimeout(() => controller.abort(), 5000);
   try {
     const res = await fetch('https://overpass-api.de/api/interpreter', {
       method: 'POST',
@@ -129,8 +129,9 @@ export async function fetchNearbyStations(lat, lon, radiusMeters = 3500) {
 
         const stations = data.elements
           .map((el) => {
-            const elLat = el.lat;
-            const elLon = el.lon;
+            const elLat = el.lat ?? el.center?.lat;
+            const elLon = el.lon ?? el.center?.lon;
+            if (elLat == null || elLon == null) return null;
             const dLat = (elLat - lat) * rad;
             const dLon = (elLon - lon) * rad;
             const a =
@@ -153,6 +154,7 @@ export async function fetchNearbyStations(lat, lon, radiusMeters = 3500) {
               operator: el.tags?.operator || el.tags?.network || '',
             };
           })
+          .filter(Boolean)
           .sort((a, b) => a.distanceMeters - b.distanceMeters);
 
         // 重複除去

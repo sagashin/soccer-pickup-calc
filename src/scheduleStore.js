@@ -3,7 +3,6 @@
  */
 
 import { getVenueDocs, getFitnessRecords, getCoachNotes } from './teamVaultStore.js';
-import { createCloudShareSnapshot } from './firebaseShare.js';
 import { safeGetItem, safeSetItem } from './utils/storage.js';
 import { sanitizeHttpUrl } from './utils/urlUtils.js';
 import { markDeleted, clearDeleted } from './utils/tombstones.js';
@@ -687,6 +686,7 @@ export async function getShortFamilyShareUrl(schedules, options = {}) {
   }
 
   try {
+    const { createCloudShareSnapshot } = await import('./firebaseShare.js');
     const shareUrl = await createCloudShareSnapshot(payload);
     if (shareUrl && shareUrl.startsWith('http')) {
       shortUrlCache.set(cacheKey, shareUrl);

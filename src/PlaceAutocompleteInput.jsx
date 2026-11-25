@@ -9,6 +9,7 @@ import {
   getSoccerRelevanceScore,
   findKnownVenues,
   isGsiMatchValid,
+  fetchNominatimThrottled,
 } from './geoUtils';
 
 async function fetchPlaceSuggestions(query, signal) {
@@ -65,21 +66,24 @@ async function fetchPlaceSuggestions(query, signal) {
   }
 
   // 2. キーがない場合、または失敗時はフリー地図（OSM + GSI）
-  // 高校名揺らぎ（「高校」->「高等学校」）も考慮
+  // 高校名揺らぎ（「高校」->「高等学校」）も考慮しつつ、Nominatimは単一キュー経由で直列実行
   const schoolVariant = trimmed.includes('高校') ? trimmed.replace(/高校/g, '高等学校') : null;
   const nomQueries = [trimmed, schoolVariant].filter(Boolean);
 
+  const fetchNomSequential = async () => {
+    const allItems = [];
+    for (const q of nomQueries) {
+      if (signal?.aborted) break;
+      const data = await fetchNominatimThrottled(q, { signal });
+      if (Array.isArray(data)) {
+        allItems.push(...data);
+      }
+    }
+    return allItems;
+  };
+
   const [nomResList, gsiRes] = await Promise.allSettled([
-    Promise.all(
-      nomQueries.map((q) =>
-        fetch(
-          `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(
-            q
-          )}&countrycodes=jp&limit=8&addressdetails=1&accept-language=ja`,
-          { signal, headers: { Accept: 'application/json' } }
-        ).then((r) => (r.ok ? r.json() : [])).catch(() => [])
-      )
-    ),
+    fetchNomSequential(),
     fetch(
       `https://msearch.gsi.go.jp/address-search/AddressSearch?q=${encodeURIComponent(trimmed)}`,
       { signal }
@@ -88,7 +92,7 @@ async function fetchPlaceSuggestions(query, signal) {
 
   // OpenStreetMap Nominatim
   if (nomResList.status === 'fulfilled' && Array.isArray(nomResList.value)) {
-    const rawNomItems = nomResList.value.flat();
+    const rawNomItems = nomResList.value;
     const coreKeyword = trimmed
       .replace(/(高等学校|高校|中学校|学校|グラウンド|グランド|サッカー場|公園|スタジアム|第\d+)/g, '')
       .trim();

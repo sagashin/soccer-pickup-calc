@@ -533,22 +533,49 @@ export function calculateHubenyDistanceKm(lat1, lon1, lat2, lon2) {
   return dist / 1000;
 }
 
-// Nominatim のレート制限（429 Too Many Requests）回避用シリアライズキュー
+// Nominatim のレート制限（1 req/sec / 429 Too Many Requests）回避用シリアライズキュー
 let nominatimQueue = Promise.resolve();
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const NOMINATIM_INTERVAL_MS = 1100;
+const sleepWithSignal = (ms, signal) =>
+  new Promise((resolve) => {
+    if (signal?.aborted) {
+      resolve();
+      return;
+    }
+    const timer = setTimeout(() => {
+      if (signal) signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    if (signal) signal.addEventListener('abort', onAbort, { once: true });
+  });
 
-async function fetchNominatimThrottled(queryToSearch) {
+export async function fetchNominatimThrottled(queryToSearch, options = {}) {
+  const { signal, extraParams = '' } = options;
+  if (!queryToSearch || signal?.aborted) return null;
+
   return new Promise((resolve) => {
     nominatimQueue = nominatimQueue
       .then(async () => {
+        if (signal?.aborted) {
+          resolve(null);
+          return;
+        }
         try {
-          const nomUrl = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(
+          const baseParams = `format=json&q=${encodeURIComponent(
             queryToSearch
           )}&countrycodes=jp&limit=8&addressdetails=1&accept-language=ja`;
+          const nomUrl = `https://nominatim.openstreetmap.org/search?${
+            extraParams ? `${extraParams}&q=${encodeURIComponent(queryToSearch)}` : baseParams
+          }`;
           const res = await fetch(nomUrl, {
+            signal,
             headers: { Accept: 'application/json' },
           });
-          await sleep(350); // レート制限安全インターバル
+          await sleepWithSignal(NOMINATIM_INTERVAL_MS, signal); // 1 req/sec 規約遵守インターバル
           if (!res.ok) {
             resolve(null);
             return;
@@ -556,7 +583,9 @@ async function fetchNominatimThrottled(queryToSearch) {
           const data = await res.json();
           resolve(data);
         } catch (e) {
-          console.warn('Nominatim throttled fetch error:', e);
+          if (e?.name !== 'AbortError') {
+            console.warn('Nominatim throttled fetch error:', e);
+          }
           resolve(null);
         }
       })

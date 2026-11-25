@@ -24,6 +24,7 @@ const MAP_LAYERS = [
     label: '国土地理院地図',
     url: 'https://cyberjapandata.gsi.go.jp/xyz/std/{z}/{x}/{y}.png',
     attribution: '国土地理院',
+    maxNativeZoom: 18,
   },
   {
     id: 'railway',
@@ -37,6 +38,7 @@ const MAP_LAYERS = [
     label: '航空写真 (地理院)',
     url: 'https://cyberjapandata.gsi.go.jp/xyz/seamlessphoto/{z}/{x}/{y}.jpg',
     attribution: '国土地理院',
+    maxNativeZoom: 18,
   },
 ];
 
@@ -109,6 +111,7 @@ export default function RouteMap({
       tileLayerRef.current = L.tileLayer(selected.url, {
         attribution: selected.attribution,
         maxZoom: 19,
+        ...(selected.maxNativeZoom ? { maxNativeZoom: selected.maxNativeZoom } : {}),
       }).addTo(mapInstanceRef.current);
     }
   }, [activeLayerId]);
@@ -124,18 +127,20 @@ export default function RouteMap({
     if (originCoords && destCoords) {
       const originIcon = L.divIcon({
         className: 'custom-pin-origin',
-        html: `<div style="background:#0284c7;color:white;font-weight:bold;font-size:11px;padding:3px 9px;border-radius:9999px;border:2px solid white;box-shadow:0 3px 8px rgba(0,0,0,0.4);white-space:nowrap;transform:translate(-50%,-50%);display:flex;align-items:center;gap:3px;">
+        html: `<div style="background:#0284c7;color:white;font-weight:bold;font-size:11px;padding:3px 9px;border-radius:9999px;border:2px solid white;box-shadow:0 3px 8px rgba(0,0,0,0.4);white-space:nowrap;width:max-content;transform:translate(-50%,-50%);display:flex;align-items:center;gap:3px;">
           <span>🏠</span><span>出発</span>
         </div>`,
-        iconSize: [52, 26],
+        iconSize: [0, 0],
+        iconAnchor: [0, 0],
       });
 
       const destIcon = L.divIcon({
         className: 'custom-pin-dest',
-        html: `<div style="background:#dc2626;color:white;font-weight:bold;font-size:11px;padding:3px 9px;border-radius:9999px;border:2px solid white;box-shadow:0 3px 8px rgba(0,0,0,0.4);white-space:nowrap;transform:translate(-50%,-50%);display:flex;align-items:center;gap:3px;">
+        html: `<div style="background:#dc2626;color:white;font-weight:bold;font-size:11px;padding:3px 9px;border-radius:9999px;border:2px solid white;box-shadow:0 3px 8px rgba(0,0,0,0.4);white-space:nowrap;width:max-content;transform:translate(-50%,-50%);display:flex;align-items:center;gap:3px;">
           <span>⚽</span><span>目的地</span>
         </div>`,
-        iconSize: [64, 26],
+        iconSize: [0, 0],
+        iconAnchor: [0, 0],
       });
 
       L.marker([originCoords.lat, originCoords.lon], { icon: originIcon }).addTo(layers);
@@ -191,7 +196,7 @@ export default function RouteMap({
     visibleParkings.forEach((p) => {
       const isFacility = p.type === 'facility';
       const bgColor = isFacility ? '#059669' : '#d97706';
-      const iconHtml = `<div style="background:${bgColor};color:white;font-weight:800;font-size:10px;padding:2px 6px;border-radius:9999px;border:1.5px solid white;box-shadow:0 2px 6px rgba(0,0,0,0.35);white-space:nowrap;transform:translate(-50%,-50%);display:flex;align-items:center;gap:2px;">
+      const iconHtml = `<div style="background:${bgColor};color:white;font-weight:800;font-size:10px;padding:2px 6px;border-radius:9999px;border:1.5px solid white;box-shadow:0 2px 6px rgba(0,0,0,0.35);white-space:nowrap;width:max-content;transform:translate(-50%,-50%);display:flex;align-items:center;gap:2px;">
         <span>🅿️</span><span>${p.walkMinutes}分</span>
       </div>`;
 
@@ -199,7 +204,8 @@ export default function RouteMap({
         icon: L.divIcon({
           className: `custom-spot-parking-${p.id}`,
           html: iconHtml,
-          iconSize: [44, 22],
+          iconSize: [0, 0],
+          iconAnchor: [0, 0],
         }),
         zIndexOffset: 100,
       });
@@ -233,7 +239,7 @@ export default function RouteMap({
 
     // 2. コンビニピン
     visibleConvs.forEach((c) => {
-      const iconHtml = `<div style="background:#2563eb;color:white;font-weight:800;font-size:10px;padding:2px 6px;border-radius:9999px;border:1.5px solid white;box-shadow:0 2px 6px rgba(0,0,0,0.35);white-space:nowrap;transform:translate(-50%,-50%);display:flex;align-items:center;gap:2px;">
+      const iconHtml = `<div style="background:#2563eb;color:white;font-weight:800;font-size:10px;padding:2px 6px;border-radius:9999px;border:1.5px solid white;box-shadow:0 2px 6px rgba(0,0,0,0.35);white-space:nowrap;width:max-content;transform:translate(-50%,-50%);display:flex;align-items:center;gap:2px;">
         <span>🏪</span><span>${c.walkMinutes}分</span>
       </div>`;
 
@@ -241,7 +247,8 @@ export default function RouteMap({
         icon: L.divIcon({
           className: `custom-spot-conv-${c.id}`,
           html: iconHtml,
-          iconSize: [44, 22],
+          iconSize: [0, 0],
+          iconAnchor: [0, 0],
         }),
         zIndexOffset: 90,
       });
@@ -284,7 +291,7 @@ export default function RouteMap({
     if (!Array.isArray(nearbyStations) || nearbyStations.length === 0) return;
 
     nearbyStations.forEach((station) => {
-      const iconHtml = `<div style="background:#4f46e5;color:white;font-weight:800;font-size:10px;padding:2px 7px;border-radius:9999px;border:1.5px solid white;box-shadow:0 2px 7px rgba(0,0,0,0.4);white-space:nowrap;transform:translate(-50%,-50%);display:flex;align-items:center;gap:3px;">
+      const iconHtml = `<div style="background:#4f46e5;color:white;font-weight:800;font-size:10px;padding:2px 7px;border-radius:9999px;border:1.5px solid white;box-shadow:0 2px 7px rgba(0,0,0,0.4);white-space:nowrap;width:max-content;transform:translate(-50%,-50%);display:flex;align-items:center;gap:3px;">
         <span>🚉</span><span>${escapeHtml(station.name)}</span><span style="opacity:0.85;">(歩${station.walkMinutes}分)</span>
       </div>`;
 
@@ -292,7 +299,8 @@ export default function RouteMap({
         icon: L.divIcon({
           className: `custom-spot-station-${station.id}`,
           html: iconHtml,
-          iconSize: [60, 22],
+          iconSize: [0, 0],
+          iconAnchor: [0, 0],
         }),
         zIndexOffset: 120,
       });

@@ -37,14 +37,16 @@ service cloud.firestore {
     // LINE共有用 一時スナップショット（追記のみ・上書き/一覧取得/削除不可）
     match /shares/{shareId} {
       allow list, update, delete: if false;
-      allow get: if shareId.size() >= 16 && shareId.size() <= 64;
+      allow get: if shareId.size() >= 16 && shareId.size() <= 64
+        && resource.data.expiresAt > request.time.toMillis();
       allow create: if shareId.size() >= 16 && shareId.size() <= 64
         && request.resource.data.keys().hasOnly(['payload', 'createdAt', 'expiresAt'])
         && request.resource.data.payload is string
         && request.resource.data.payload.size() > 0
         && request.resource.data.payload.size() <= 120000
         && request.resource.data.createdAt is number
-        && request.resource.data.expiresAt is number;
+        && request.resource.data.expiresAt is number
+        && request.resource.data.expiresAt <= request.time.toMillis() + 8 * 86400 * 1000;
     }
   }
 }

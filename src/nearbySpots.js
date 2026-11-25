@@ -1,6 +1,7 @@
 /**
  * 目的地周辺の駐車場・コンビニ取得ユーティリティ
  */
+import { fetchNominatimThrottled } from './geoUtils.js';
 
 // 2地点間の直線距離（メートル）を計算（Haversine）
 export function calculateDistanceMeters(lat1, lon1, lat2, lon2) {
@@ -151,7 +152,7 @@ export async function fetchNearbySpots({ lat, lon, destName = '', signal }) {
         node["shop"="convenience"](around:${radiusMeters},${lat},${lon});
         way["shop"="convenience"](around:${radiusMeters},${lat},${lon});
       );
-      out center 40;
+      out center;
     `;
 
     const overpassRes = await fetch('https://overpass-api.de/api/interpreter', {
@@ -262,31 +263,14 @@ export async function fetchNearbySpots({ lat, lon, destName = '', signal }) {
   const n = (lat + deltaLat).toFixed(5);
   const e = (lon + deltaLon).toFixed(5);
 
+  const extraParams = `format=json&viewbox=${w},${n},${e},${s}&bounded=1&limit=15&addressdetails=1&extratags=1&accept-language=ja`;
   const fetchNominatim = async (query) => {
-    try {
-      const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(
-        query
-      )}&viewbox=${w},${n},${e},${s}&bounded=1&limit=15&addressdetails=1&extratags=1&accept-language=ja`;
-      const res = await fetch(url, {
-        signal,
-        headers: { Accept: 'application/json' },
-      });
-      if (!res.ok) return [];
-      return await res.json();
-    } catch (err) {
-      if (err.name !== 'AbortError') {
-        console.warn(`Nominatim search failed for ${query}:`, err);
-      }
-      return [];
-    }
+    const data = await fetchNominatimThrottled(query, { signal, extraParams });
+    return Array.isArray(data) ? data : [];
   };
 
-  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
   const parkingList = await fetchNominatim('駐車場');
-  await sleep(360);
   const coinList = await fetchNominatim('コインパーキング');
-  await sleep(360);
   const convList = await fetchNominatim('コンビニ');
 
   // 重複排除キー用

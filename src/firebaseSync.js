@@ -2,7 +2,7 @@
  * Firebase Firestore による家族間リアルタイムクラウド自動同期マネージャー
  */
 
-import { doc, setDoc, getDoc, onSnapshot } from 'firebase/firestore';
+import { doc, getDoc, onSnapshot, runTransaction } from 'firebase/firestore';
 import { db, withTimeout } from './firebaseClient.js';
 import {
   getSavedSchedules,
@@ -146,25 +146,32 @@ export async function pushAllToCloud(familyIdParam = null) {
   if (!db) return { success: false, reason: 'no-db', error: 'Firestoreが初期化されていません。' };
 
   try {
-    const schedules = getSavedSchedules();
-    const venueDocs = getVenueDocs();
-    const fitnessRecords = getFitnessRecords();
-    const coachNotes = getCoachNotes();
-    const deletedIds = getDeletedIds();
-    const now = Date.now();
-    lastLocalPushedAt = now;
-
     const familyDocRef = doc(db, 'families', check.familyId);
     await withTimeout(
-      setDoc(familyDocRef, {
-        schedules: schedules.slice(0, 120),
-        venueDocs: venueDocs.slice(0, 50),
-        fitnessRecords: fitnessRecords.slice(0, 120),
-        coachNotes: coachNotes.slice(0, 50),
-        deletedIds,
-        updatedAt: now,
-        lastUpdatedBy: getSavedDeviceName().slice(0, 50),
-        schemaVersion: 2,
+      runTransaction(db, async (tx) => {
+        const snap = await tx.get(familyDocRef);
+        if (snap.exists()) {
+          applyCloudDataToLocal(snap.data());
+        }
+
+        const schedules = getSavedSchedules();
+        const venueDocs = getVenueDocs();
+        const fitnessRecords = getFitnessRecords();
+        const coachNotes = getCoachNotes();
+        const deletedIds = getDeletedIds();
+        const now = Date.now();
+        lastLocalPushedAt = now;
+
+        tx.set(familyDocRef, {
+          schedules: schedules.slice(-120),
+          venueDocs: venueDocs.slice(0, 50),
+          fitnessRecords: fitnessRecords.slice(0, 120),
+          coachNotes: coachNotes.slice(0, 50),
+          deletedIds,
+          updatedAt: now,
+          lastUpdatedBy: getSavedDeviceName().slice(0, 50),
+          schemaVersion: 2,
+        });
       }),
       7000,
       'クラウド保存がタイムアウトしました。通信状況をご確認ください。'

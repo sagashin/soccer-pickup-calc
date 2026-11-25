@@ -27,9 +27,10 @@ import {
   X,
   Cloud,
 } from 'lucide-react';
-import RouteMap from './RouteMap';
 import PlaceAutocompleteInput from './PlaceAutocompleteInput';
-import ScheduleImageImporter from './ScheduleImageImporter';
+import ErrorBoundary from './ErrorBoundary';
+const RouteMap = lazy(() => import('./RouteMap'));
+const ScheduleImageImporter = lazy(() => import('./ScheduleImageImporter'));
 const NearbySpotsSection = lazy(() => import('./NearbySpotsSection'));
 const ScheduleCalendarView = lazy(() => import('./ScheduleCalendarView'));
 const MatchWeatherChecklist = lazy(() => import('./MatchWeatherChecklist'));
@@ -38,22 +39,12 @@ const TeamVaultView = lazy(() => import('./TeamVaultView'));
 const FamilyCloudModal = lazy(() => import('./FamilyCloudModal'));
 import { safeGetItem, safeSetItem } from './utils/storage';
 import { openLineShare } from './utils/urlUtils';
-import { fetchCloudShareSnapshot } from './firebaseShare';
 import {
   findMatchingVenueDocs,
   mergeImportedVenueDocs,
   mergeImportedFitnessRecords,
   mergeImportedCoachNotes,
 } from './teamVaultStore';
-import {
-  getSavedFamilyId,
-  saveFamilyId,
-  parseFamilyInviteUrl,
-  pushAllToCloud,
-  pullFromCloud,
-  startFamilyRealtimeSync,
-  stopFamilyRealtimeSync,
-} from './firebaseSync';
 import {
   parseFamilyShareUrl,
   parseSharePayloadObject,
@@ -388,6 +379,20 @@ function formatJapaneseDateLabel(dateStr) {
   return `${m}月${d}日(${w})`;
 }
 
+const FAMILY_STORAGE_KEY = 'soccer_pickup_family_id_v1';
+
+function readSavedFamilyId() {
+  return String(safeGetItem(FAMILY_STORAGE_KEY, '')).trim();
+}
+
+function hasFamilyInviteInUrl() {
+  if (typeof window === 'undefined') return false;
+  return (
+    /[#&?]family=/.test(window.location.hash || '') ||
+    /[?&]family=/.test(window.location.search || '')
+  );
+}
+
 function LazyTabFallback() {
   return (
     <div className="bg-white rounded-3xl p-8 text-center border border-slate-200/80 shadow-sm flex flex-col items-center justify-center gap-2">
@@ -534,68 +539,148 @@ export default function App() {
   const [isScheduleImporterOpen, setIsScheduleImporterOpen] = useState(false);
   const [scheduleRefreshKey, setScheduleRefreshKey] = useState(0);
   const [vaultRefreshKey, setVaultRefreshKey] = useState(0);
-  // 家族共有リンクから受信した際のお祝いトースト
-  const [familySyncToast, setFamilySyncToast] = useState('');
+  // 家族共有リンクから受信した際の通知トースト ({ type: 'success' | 'error', message, subtext } または文字列)
+  const [familySyncToast, setFamilySyncToast] = useState(null);
+  const [shareLoading, setShareLoading] = useState(false);
+  const toastTimerRef = useRef(null);
   // 家族クラウド同期（Firestore）ステート
   const [isFamilyCloudModalOpen, setIsFamilyCloudModalOpen] = useState(false);
-  const [familyId, setFamilyId] = useState(() => getSavedFamilyId());
+  const [familyId, setFamilyId] = useState(() => readSavedFamilyId());
 
-  // 家族招待リンク (#family=... / ?family=...) の自動参加チェック
-  useEffect(() => {
-    const invitedFamilyId = parseFamilyInviteUrl();
-    if (invitedFamilyId) {
-      saveFamilyId(invitedFamilyId);
-      setFamilyId(invitedFamilyId);
-      setFamilySyncToast(`☁️ 家族グループ「${invitedFamilyId}」に参加しました！`);
-      setTimeout(() => setFamilySyncToast(''), 6000);
-      try {
-        const cleanUrl = window.location.origin + window.location.pathname;
-        window.history.replaceState(null, '', cleanUrl);
-      } catch {
-        // ignore
-      }
+  const showFamilyToast = useCallback((payload, durationMs = 6000) => {
+    if (toastTimerRef.current) {
+      clearTimeout(toastTimerRef.current);
+      toastTimerRef.current = null;
+    }
+    if (!payload) {
+      setFamilySyncToast(null);
+      return;
+    }
+    const normalized =
+      typeof payload === 'string'
+        ? { type: 'success', message: payload, subtext: '' }
+        : { type: payload.type || 'success', message: payload.message || '', subtext: payload.subtext || '' };
+    setFamilySyncToast(normalized);
+    if (durationMs > 0) {
+      toastTimerRef.current = setTimeout(() => {
+        setFamilySyncToast(null);
+        toastTimerRef.current = null;
+      }, durationMs);
     }
   }, []);
 
-  // 家族クラウド自動リアルタイム同期（Firestoreの変更監視）
+  useEffect(() => {
+    return () => {
+      if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    };
+  }, []);
+
+  // localStorage 容量超過などの保存エラー通知を購読
+  useEffect(() => {
+    const onStorageError = () => {
+      showFamilyToast(
+        {
+          type: 'error',
+          message: '⚠️ 端末の保存容量がいっぱいです',
+          subtext: '一部の変更が保存できませんでした。不要な予定や添付データを整理してください。',
+        },
+        8000
+      );
+    };
+    window.addEventListener('soccer-pickup-storage-error', onStorageError);
+    return () => window.removeEventListener('soccer-pickup-storage-error', onStorageError);
+  }, [showFamilyToast]);
+
+  // 家族招待リンク (#family=... / ?family=...) の自動参加チェック（該当URL時のみ動的ロード）
+  useEffect(() => {
+    if (!hasFamilyInviteInUrl()) return;
+    let cancelled = false;
+    import('./firebaseSync')
+      .then(({ parseFamilyInviteUrl, saveFamilyId }) => {
+        if (cancelled) return;
+        const invitedFamilyId = parseFamilyInviteUrl();
+        if (invitedFamilyId) {
+          saveFamilyId(invitedFamilyId);
+          setFamilyId(invitedFamilyId);
+          showFamilyToast({
+            type: 'success',
+            message: `☁️ 家族グループ「${invitedFamilyId}」に参加しました！`,
+            subtext: '予定とチームノートが自動でクラウド同期されます',
+          });
+          try {
+            const cleanUrl = window.location.origin + window.location.pathname;
+            window.history.replaceState(null, '', cleanUrl);
+          } catch {
+            // ignore
+          }
+        }
+      })
+      .catch((err) => {
+        console.warn('Failed to load family sync module for invite:', err);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [showFamilyToast]);
+
+  // 家族クラウド自動リアルタイム同期（familyId がある場合のみ動的ロード）
   useEffect(() => {
     if (!familyId) return;
+    let cancelled = false;
+    let syncMod = null;
 
-    // 初回マージ
-    pullFromCloud(familyId).then((res) => {
-      if (res.success && (res.addedEvents > 0 || res.updatedEvents > 0)) {
-        setScheduleRefreshKey((k) => k + 1);
-        setVaultRefreshKey((k) => k + 1);
-      }
-    });
+    import('./firebaseSync')
+      .then((mod) => {
+        if (cancelled) return;
+        syncMod = mod;
+        // 初回マージ
+        mod.pullFromCloud(familyId).then((res) => {
+          if (!cancelled && res.success && (res.addedEvents > 0 || res.updatedEvents > 0)) {
+            setScheduleRefreshKey((k) => k + 1);
+            setVaultRefreshKey((k) => k + 1);
+          }
+        });
 
-    // リアルタイム購読開始
-    startFamilyRealtimeSync({
-      onDataUpdated: (result) => {
-        setScheduleRefreshKey((k) => k + 1);
-        setVaultRefreshKey((k) => k + 1);
-        setFamilySyncToast(`☁️ ${result.lastUpdatedBy}がデータを更新しました`);
-        setTimeout(() => setFamilySyncToast(''), 6000);
-      },
-    });
+        // リアルタイム購読開始
+        mod.startFamilyRealtimeSync({
+          onDataUpdated: (result) => {
+            if (cancelled) return;
+            setScheduleRefreshKey((k) => k + 1);
+            setVaultRefreshKey((k) => k + 1);
+            showFamilyToast({
+              type: 'success',
+              message: `☁️ ${result.lastUpdatedBy}がデータを更新しました`,
+              subtext: 'カレンダーとチームノートに最新内容が反映されました',
+            });
+          },
+        });
+      })
+      .catch((err) => {
+        console.warn('Failed to initialize family realtime sync:', err);
+      });
 
     return () => {
-      stopFamilyRealtimeSync();
+      cancelled = true;
+      syncMod?.stopFamilyRealtimeSync();
     };
-  }, [familyId]);
+  }, [familyId, showFamilyToast]);
 
   // 予定やノートが変更されたときにカレンダーを更新し、クラウドにも自動反映するハンドラー
   const handleSchedulesChanged = useCallback(() => {
     setScheduleRefreshKey((k) => k + 1);
-    if (getSavedFamilyId()) {
-      pushAllToCloud();
+    if (readSavedFamilyId()) {
+      import('./firebaseSync')
+        .then((mod) => mod.pushAllToCloud())
+        .catch((err) => console.warn('pushAllToCloud failed:', err));
     }
   }, []);
 
   const handleVaultChanged = useCallback(() => {
     setVaultRefreshKey((k) => k + 1);
-    if (getSavedFamilyId()) {
-      pushAllToCloud();
+    if (readSavedFamilyId()) {
+      import('./firebaseSync')
+        .then((mod) => mod.pushAllToCloud())
+        .catch((err) => console.warn('pushAllToCloud failed:', err));
     }
   }, []);
 
@@ -644,12 +729,21 @@ export default function App() {
       }
 
       if (syncToastParts.length > 0) {
-        setFamilySyncToast(`👨‍👩‍👦 家族共有データを取り込みました！（${syncToastParts.join('・')}）`);
+        showFamilyToast(
+          {
+            type: 'success',
+            message: `👨‍👩‍👦 家族共有データを取り込みました！（${syncToastParts.join('・')}）`,
+            subtext: 'カレンダーに最新スケジュールが追加・更新されました',
+          },
+          7000
+        );
         setScheduleRefreshKey((k) => k + 1);
         setVaultRefreshKey((k) => k + 1);
 
-        if (getSavedFamilyId()) {
-          pushAllToCloud();
+        if (readSavedFamilyId()) {
+          import('./firebaseSync')
+            .then((mod) => mod.pushAllToCloud())
+            .catch((err) => console.warn('pushAllToCloud failed:', err));
         }
 
         if (shouldOpenSchedule) {
@@ -664,29 +758,59 @@ export default function App() {
         } catch {
           // ignore
         }
-
-        setTimeout(() => {
-          if (!cancelled) setFamilySyncToast('');
-        }, 7000);
       }
     };
 
     const checkAndImportFamilySync = async () => {
-      // 1. 新形式 ?share=<shareId> (Firestore 一時スナップショット)
+      // 1. 新形式 ?share=<shareId> (Firestore 一時スナップショット・必要時のみ動的ロード)
       const shareMatch = window.location.search.match(/[?&]share=([^&]+)/);
       if (shareMatch && shareMatch[1]) {
         const shareId = decodeURIComponent(shareMatch[1]).trim();
-        const snapRes = await fetchCloudShareSnapshot(shareId);
-        if (!cancelled && snapRes.success && snapRes.payload) {
-          const parsedObj = parseSharePayloadObject(snapRes.payload);
-          applyImportedSharedData(parsedObj);
+        setShareLoading(true);
+        try {
+          const { fetchCloudShareSnapshot } = await import('./firebaseShare');
+          const snapRes = await fetchCloudShareSnapshot(shareId);
+          if (cancelled) return;
+          if (snapRes.success && snapRes.payload) {
+            const parsedObj = parseSharePayloadObject(snapRes.payload);
+            applyImportedSharedData(parsedObj);
+            return;
+          } else if (snapRes.reason === 'expired' || snapRes.reason === 'not-found') {
+            showFamilyToast(
+              {
+                type: 'error',
+                message: '⚠️ この共有リンクは期限切れか存在しません（7日間有効）',
+                subtext: '送信元に再送信を依頼してください。',
+              },
+              8000
+            );
+            return;
+          } else {
+            showFamilyToast(
+              {
+                type: 'error',
+                message: '⚠️ 共有データの読み込みに失敗しました',
+                subtext: '通信状況をご確認のうえ、リンクをもう一度開いてください。',
+              },
+              8000
+            );
+            return;
+          }
+        } catch (err) {
+          if (!cancelled) {
+            console.warn('Failed to fetch cloud share snapshot:', err);
+            showFamilyToast(
+              {
+                type: 'error',
+                message: '⚠️ 共有データの読み込みに失敗しました',
+                subtext: '通信状況をご確認のうえ、リンクをもう一度開いてください。',
+              },
+              8000
+            );
+          }
           return;
-        } else if (!cancelled && (snapRes.reason === 'expired' || snapRes.reason === 'not-found')) {
-          setFamilySyncToast('⚠️ この共有リンクは期限切れか存在しません（7日間有効）。再送信を依頼してください。');
-          setTimeout(() => {
-            if (!cancelled) setFamilySyncToast('');
-          }, 7000);
-          return;
+        } finally {
+          if (!cancelled) setShareLoading(false);
         }
       }
 
@@ -706,7 +830,7 @@ export default function App() {
       window.removeEventListener('hashchange', checkAndImportFamilySync);
       window.removeEventListener('popstate', checkAndImportFamilySync);
     };
-  }, []);
+  }, [showFamilyToast]);
 
   // タブ切り替え時は常に確実に画面最上部（ヘッダー・出発カード）へスクロール
   useEffect(() => {
@@ -1578,29 +1702,63 @@ export default function App() {
           }}
           className="flex-1 px-4 py-3.5 space-y-3.5"
         >
-          {/* 👨‍👩‍👦 家族同期受信トーストバナー */}
-          {familySyncToast && (
-            <div className="bg-gradient-to-r from-emerald-600 to-teal-600 text-white rounded-2xl p-4 shadow-lg flex items-center justify-between gap-3 border border-emerald-400">
-              <div className="flex items-center gap-2.5">
-                <div className="w-8 h-8 rounded-xl bg-white/20 flex items-center justify-center shrink-0">
-                  <Check className="w-5 h-5 text-white" />
-                </div>
-                <div>
-                  <div className="text-xs font-black">{familySyncToast}</div>
-                  <div className="text-[10px] text-emerald-100 font-medium">
-                    カレンダーに最新スケジュールが追加・更新されました
-                  </div>
-                </div>
+          {/* ☁️ 共有リンク読込中インジケーター */}
+          {shareLoading && (
+            <div
+              role="status"
+              className="bg-white text-emerald-900 rounded-2xl p-3.5 shadow-md flex items-center gap-3 border border-emerald-200"
+            >
+              <div className="w-5 h-5 border-2 border-emerald-600 border-t-transparent rounded-full animate-spin shrink-0" />
+              <div className="text-xs font-extrabold">
+                共有リンクの予定データを読み込み中...
               </div>
-              <button
-                type="button"
-                onClick={() => setFamilySyncToast('')}
-                className="text-white/80 hover:text-white text-xs font-bold p-1"
-              >
-                ✕
-              </button>
             </div>
           )}
+
+          {/* 👨‍👩‍👦 家族同期・ストレージ通知トーストバナー */}
+          {familySyncToast && (() => {
+            const toastObj =
+              typeof familySyncToast === 'string'
+                ? { type: 'success', message: familySyncToast, subtext: 'カレンダーに最新スケジュールが追加・更新されました' }
+                : familySyncToast;
+            const isError = toastObj.type === 'error';
+            return (
+              <div
+                role={isError ? 'alert' : 'status'}
+                className={`text-white rounded-2xl p-4 shadow-lg flex items-center justify-between gap-3 border ${
+                  isError
+                    ? 'bg-gradient-to-r from-rose-600 to-amber-600 border-rose-400'
+                    : 'bg-gradient-to-r from-emerald-600 to-teal-600 border-emerald-400'
+                }`}
+              >
+                <div className="flex items-center gap-2.5">
+                  <div className="w-8 h-8 rounded-xl bg-white/20 flex items-center justify-center shrink-0">
+                    {isError ? (
+                      <AlertCircle className="w-5 h-5 text-white" />
+                    ) : (
+                      <Check className="w-5 h-5 text-white" />
+                    )}
+                  </div>
+                  <div>
+                    <div className="text-xs font-black">{toastObj.message}</div>
+                    {toastObj.subtext && (
+                      <div className={`text-[10px] font-medium ${isError ? 'text-rose-100' : 'text-emerald-100'}`}>
+                        {toastObj.subtext}
+                      </div>
+                    )}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => showFamilyToast(null)}
+                  aria-label="通知を閉じる"
+                  className="text-white/80 hover:text-white text-xs font-bold p-1 shrink-0"
+                >
+                  ✕
+                </button>
+              </div>
+            );
+          })()}
 
           {/* ==================== タブ 1: 逆算ナビ ==================== */}
           {activeTab === 'calc' && (
@@ -2080,13 +2238,17 @@ export default function App() {
               </section>
 
               {/* 📸 日程表画像から一発逆算（AI解析） */}
-              <ScheduleImageImporter
-                onApplySchedule={handleApplySchedule}
-                onSaveToSchedules={handleSchedulesChanged}
-              />
+              <ErrorBoundary compact>
+                <Suspense fallback={<LazyTabFallback />}>
+                  <ScheduleImageImporter
+                    onApplySchedule={handleApplySchedule}
+                    onSaveToSchedules={handleSchedulesChanged}
+                  />
+                </Suspense>
+              </ErrorBoundary>
 
               {/* 2. 目的地 ＆ 集合日時 入力フォーム */}
-              <section className="bg-white rounded-3xl p-4 shadow-sm border border-slate-200/80 space-y-4 overflow-hidden">
+              <section className="bg-white rounded-3xl p-4 shadow-sm border border-slate-200/80 space-y-4">
                 {/* 目的地入力 */}
                 <div>
                   <label htmlFor="destination-input" className="text-xs font-extrabold text-slate-700 flex items-center gap-1.5 mb-1.5">
@@ -2699,22 +2861,26 @@ export default function App() {
                   )}
                 </div>
 
-                <RouteMap
-                  originCoords={routeResult?.originGeo}
-                  destCoords={routeResult?.destGeo}
-                  routeGeometry={
-                    isTrainMode && transitResult?.coordinates && transitResult.coordinates.length > 0
-                      ? { coordinates: transitResult.coordinates, isLatLng: true }
-                      : routeResult?.geometry
-                  }
-                  nearbyParkings={nearbyParkings}
-                  nearbyConveniences={nearbyConveniences}
-                  nearbyStations={nearbyStations}
-                  spotFilter={spotFilter}
-                  selectedSpotId={selectedSpotId}
-                  onSelectSpot={handleSelectSpot}
-                  transportMode={transportMode}
-                />
+                <ErrorBoundary compact>
+                  <Suspense fallback={<LazyTabFallback />}>
+                    <RouteMap
+                      originCoords={routeResult?.originGeo}
+                      destCoords={routeResult?.destGeo}
+                      routeGeometry={
+                        isTrainMode && transitResult?.coordinates && transitResult.coordinates.length > 0
+                          ? { coordinates: transitResult.coordinates, isLatLng: true }
+                          : routeResult?.geometry
+                      }
+                      nearbyParkings={nearbyParkings}
+                      nearbyConveniences={nearbyConveniences}
+                      nearbyStations={nearbyStations}
+                      spotFilter={spotFilter}
+                      selectedSpotId={selectedSpotId}
+                      onSelectSpot={handleSelectSpot}
+                      transportMode={transportMode}
+                    />
+                  </Suspense>
+                </ErrorBoundary>
               </section>
             </>
           )}
@@ -2722,14 +2888,16 @@ export default function App() {
           {/* ==================== タブ: 📅 試合日程・カレンダー管理 ==================== */}
           {activeTab === 'schedule' && (
             <div className="space-y-4">
-              <Suspense fallback={<LazyTabFallback />}>
-                <ScheduleCalendarView
-                  refreshTrigger={scheduleRefreshKey}
-                  onSchedulesChange={handleSchedulesChanged}
-                  onSelectForCalculation={handleSelectScheduleForCalculation}
-                  onOpenImageImporter={() => setIsScheduleImporterOpen(true)}
-                />
-              </Suspense>
+              <ErrorBoundary compact>
+                <Suspense fallback={<LazyTabFallback />}>
+                  <ScheduleCalendarView
+                    refreshTrigger={scheduleRefreshKey}
+                    onSchedulesChange={handleSchedulesChanged}
+                    onSelectForCalculation={handleSelectScheduleForCalculation}
+                    onOpenImageImporter={() => setIsScheduleImporterOpen(true)}
+                  />
+                </Suspense>
+              </ErrorBoundary>
 
               {/* 📸 画像インポーター（全画面ポップアップモーダル：スクロール不要で目の前に表示） */}
               {isScheduleImporterOpen && (
@@ -2759,16 +2927,20 @@ export default function App() {
                       </button>
                     </div>
 
-                    <ScheduleImageImporter
-                      isOpen={true}
-                      onToggleOpen={() => setIsScheduleImporterOpen((p) => !p)}
-                      onApplySchedule={handleApplySchedule}
-                      onSaveToSchedules={() => {
-                        // 保存されたらカレンダーを即時再描画し、クラウド同期してモーダルを閉じる
-                        handleSchedulesChanged();
-                        setIsScheduleImporterOpen(false);
-                      }}
-                    />
+                    <ErrorBoundary compact>
+                      <Suspense fallback={<LazyTabFallback />}>
+                        <ScheduleImageImporter
+                          isOpen={true}
+                          onToggleOpen={() => setIsScheduleImporterOpen((p) => !p)}
+                          onApplySchedule={handleApplySchedule}
+                          onSaveToSchedules={() => {
+                            // 保存されたらカレンダーを即時再描画し、クラウド同期してモーダルを閉じる
+                            handleSchedulesChanged();
+                            setIsScheduleImporterOpen(false);
+                          }}
+                        />
+                      </Suspense>
+                    </ErrorBoundary>
                   </div>
                 </div>
               )}
@@ -2809,22 +2981,26 @@ export default function App() {
                     </span>
                   </h2>
                 </div>
-                <RouteMap
-                  originCoords={routeResult?.originGeo}
-                  destCoords={routeResult?.destGeo}
-                  routeGeometry={
-                    isTrainMode && transitResult?.coordinates && transitResult.coordinates.length > 0
-                      ? { coordinates: transitResult.coordinates, isLatLng: true }
-                      : routeResult?.geometry
-                  }
-                  nearbyParkings={nearbyParkings}
-                  nearbyConveniences={nearbyConveniences}
-                  nearbyStations={nearbyStations}
-                  spotFilter={spotFilter}
-                  selectedSpotId={selectedSpotId}
-                  onSelectSpot={handleSelectSpot}
-                  transportMode={transportMode}
-                />
+                <ErrorBoundary compact>
+                  <Suspense fallback={<LazyTabFallback />}>
+                    <RouteMap
+                      originCoords={routeResult?.originGeo}
+                      destCoords={routeResult?.destGeo}
+                      routeGeometry={
+                        isTrainMode && transitResult?.coordinates && transitResult.coordinates.length > 0
+                          ? { coordinates: transitResult.coordinates, isLatLng: true }
+                          : routeResult?.geometry
+                      }
+                      nearbyParkings={nearbyParkings}
+                      nearbyConveniences={nearbyConveniences}
+                      nearbyStations={nearbyStations}
+                      spotFilter={spotFilter}
+                      selectedSpotId={selectedSpotId}
+                      onSelectSpot={handleSelectSpot}
+                      transportMode={transportMode}
+                    />
+                  </Suspense>
+                </ErrorBoundary>
               </section>
 
               {/* 最寄り駅リストカード (タブ2でも常時確認可能) */}
@@ -2862,21 +3038,23 @@ export default function App() {
 
               {/* 駐車場・コンビニ詳細リスト */}
               {routeResult?.destGeo ? (
-                <Suspense fallback={<LazyTabFallback />}>
-                  <NearbySpotsSection
-                    destGeo={routeResult.destGeo}
-                    destName={destination}
-                    parkings={nearbyParkings}
-                    conveniences={nearbyConveniences}
-                    loading={spotsLoading}
-                    error={spotsError}
-                    onRefresh={() => loadNearbySpots(routeResult.destGeo, destination)}
-                    activeFilter={spotFilter}
-                    setActiveFilter={setSpotFilter}
-                    selectedSpotId={selectedSpotId}
-                    onSelectSpot={handleSelectSpot}
-                  />
-                </Suspense>
+                <ErrorBoundary compact>
+                  <Suspense fallback={<LazyTabFallback />}>
+                    <NearbySpotsSection
+                      destGeo={routeResult.destGeo}
+                      destName={destination}
+                      parkings={nearbyParkings}
+                      conveniences={nearbyConveniences}
+                      loading={spotsLoading}
+                      error={spotsError}
+                      onRefresh={() => loadNearbySpots(routeResult.destGeo, destination)}
+                      activeFilter={spotFilter}
+                      setActiveFilter={setSpotFilter}
+                      selectedSpotId={selectedSpotId}
+                      onSelectSpot={handleSelectSpot}
+                    />
+                  </Suspense>
+                </ErrorBoundary>
               ) : (
                 <div className="bg-white rounded-3xl p-8 text-center text-slate-400 text-xs">
                   「逆算ナビ」タブで目的地を決定すると、周辺駐車場・コンビニが自動検索されます。
@@ -2888,35 +3066,39 @@ export default function App() {
           {/* ==================== タブ 3: 🎒 持ち物・天気 ==================== */}
           {activeTab === 'checklist' && (
             <div className="space-y-4">
-              <Suspense fallback={<LazyTabFallback />}>
-                <MatchWeatherChecklist
-                  destGeo={routeResult?.destGeo}
-                  destName={destination}
-                  travelDate={travelDate}
-                  transportMode={transportMode}
-                />
-              </Suspense>
+              <ErrorBoundary compact>
+                <Suspense fallback={<LazyTabFallback />}>
+                  <MatchWeatherChecklist
+                    destGeo={routeResult?.destGeo}
+                    destName={destination}
+                    travelDate={travelDate}
+                    transportMode={transportMode}
+                  />
+                </Suspense>
+              </ErrorBoundary>
             </div>
           )}
 
           {/* ==================== タブ 5: 📚 チームノート（会場資料・体力測定・助言） ==================== */}
           {activeTab === 'vault' && (
             <div className="space-y-4">
-              <Suspense fallback={<LazyTabFallback />}>
-                <TeamVaultView
-                  refreshTrigger={vaultRefreshKey}
-                  onApplyVenueToCalc={(venueName) => {
-                    setDestination(venueName);
-                    setSelectedPresetId(null);
-                    recordRecentVenue(venueName);
-                    setActiveTab('calc');
-                    skipNextAutoRecalcRef.current = true;
-                    calculateRoute(origin, venueName);
-                  }}
-                  highlightVenueName={destination}
-                  onVaultChanged={handleVaultChanged}
-                />
-              </Suspense>
+              <ErrorBoundary compact>
+                <Suspense fallback={<LazyTabFallback />}>
+                  <TeamVaultView
+                    refreshTrigger={vaultRefreshKey}
+                    onApplyVenueToCalc={(venueName) => {
+                      setDestination(venueName);
+                      setSelectedPresetId(null);
+                      recordRecentVenue(venueName);
+                      setActiveTab('calc');
+                      skipNextAutoRecalcRef.current = true;
+                      calculateRoute(origin, venueName);
+                    }}
+                    highlightVenueName={destination}
+                    onVaultChanged={handleVaultChanged}
+                  />
+                </Suspense>
+              </ErrorBoundary>
             </div>
           )}
 
@@ -3054,38 +3236,42 @@ export default function App() {
 
         {/* Google Maps APIキー設定モーダル */}
         {isGmapsModalOpen && (
-          <Suspense fallback={null}>
-            <GoogleMapsKeyModal
-              isOpen={isGmapsModalOpen}
-              onClose={() => setIsGmapsModalOpen(false)}
-              onKeySaved={(k) => {
-                setGmapsApiKey(k);
-                if (k) {
-                  calculateRoute(origin, destination);
-                }
-              }}
-            />
-          </Suspense>
+          <ErrorBoundary compact>
+            <Suspense fallback={null}>
+              <GoogleMapsKeyModal
+                isOpen={isGmapsModalOpen}
+                onClose={() => setIsGmapsModalOpen(false)}
+                onKeySaved={(k) => {
+                  setGmapsApiKey(k);
+                  if (k) {
+                    calculateRoute(origin, destination);
+                  }
+                }}
+              />
+            </Suspense>
+          </ErrorBoundary>
         )}
 
         {/* ☁️ 家族クラウド自動同期モーダル */}
         {isFamilyCloudModalOpen && (
-          <Suspense fallback={null}>
-            <FamilyCloudModal
-              isOpen={isFamilyCloudModalOpen}
-              onClose={() => setIsFamilyCloudModalOpen(false)}
-              familyId={familyId}
-              onFamilyIdChanged={(newId) => {
-                setFamilyId(newId);
-                setScheduleRefreshKey((k) => k + 1);
-                setVaultRefreshKey((k) => k + 1);
-              }}
-              onManualSyncCompleted={() => {
-                setScheduleRefreshKey((k) => k + 1);
-                setVaultRefreshKey((k) => k + 1);
-              }}
-            />
-          </Suspense>
+          <ErrorBoundary compact>
+            <Suspense fallback={null}>
+              <FamilyCloudModal
+                isOpen={isFamilyCloudModalOpen}
+                onClose={() => setIsFamilyCloudModalOpen(false)}
+                familyId={familyId}
+                onFamilyIdChanged={(newId) => {
+                  setFamilyId(newId);
+                  setScheduleRefreshKey((k) => k + 1);
+                  setVaultRefreshKey((k) => k + 1);
+                }}
+                onManualSyncCompleted={() => {
+                  setScheduleRefreshKey((k) => k + 1);
+                  setVaultRefreshKey((k) => k + 1);
+                }}
+              />
+            </Suspense>
+          </ErrorBoundary>
         )}
       </div>
     </div>

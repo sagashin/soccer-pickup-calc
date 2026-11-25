@@ -16,6 +16,25 @@ export function safeGetItem(key, fallback = null) {
   }
 }
 
+let lastStorageErrorNotifiedAt = 0;
+const STORAGE_ERROR_THROTTLE_MS = 3000;
+
+function notifyStorageError(key, err) {
+  if (typeof window === 'undefined' || typeof window.dispatchEvent !== 'function') return;
+  const now = Date.now();
+  if (now - lastStorageErrorNotifiedAt < STORAGE_ERROR_THROTTLE_MS) return;
+  lastStorageErrorNotifiedAt = now;
+  try {
+    window.dispatchEvent(
+      new CustomEvent('soccer-pickup-storage-error', {
+        detail: { key, name: err?.name || 'StorageError' },
+      })
+    );
+  } catch {
+    // ignore
+  }
+}
+
 export function safeSetItem(key, value) {
   if (!isStorageAvailable()) return false;
   try {
@@ -23,6 +42,7 @@ export function safeSetItem(key, value) {
     return true;
   } catch (err) {
     console.warn(`localStorage.setItem failed for "${key}":`, err);
+    notifyStorageError(key, err);
     return false;
   }
 }

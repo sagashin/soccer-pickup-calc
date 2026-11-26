@@ -23,12 +23,49 @@ import {
   calculateMeetingTime,
 } from './geminiScheduleParser';
 import { mergeImportedEvents, getLocalDateIso } from './scheduleStore';
+import { safeGetItem, safeSetItem } from './utils/storage';
+
+const CATEGORY_LEAD_STORAGE_KEY = 'soccer_pickup_category_lead_v1';
+const DEFAULT_CATEGORY_LEADS = {
+  match: 120,    // 公式戦・新人戦・カップ戦・クラブ選手権・練習試合
+  practice: 15,  // 練習
+  other: 30,     // その他・応援
+};
+
+function getCategoryGroupKey(category = '') {
+  const c = String(category || '');
+  if (/公式戦|新人戦|カップ戦|クラブ選手権|練習試合|TM|試合/.test(c)) return 'match';
+  if (/練習|TR/.test(c)) return 'practice';
+  return 'other';
+}
+
+function getCategoryGroupLabel(groupKey) {
+  if (groupKey === 'match') return '試合系';
+  if (groupKey === 'practice') return '練習';
+  return 'その他';
+}
+
+function loadSavedCategoryLeads() {
+  try {
+    const raw = safeGetItem(CATEGORY_LEAD_STORAGE_KEY, null);
+    if (!raw) return { ...DEFAULT_CATEGORY_LEADS };
+    const parsed = JSON.parse(raw);
+    return {
+      match: typeof parsed?.match === 'number' ? parsed.match : DEFAULT_CATEGORY_LEADS.match,
+      practice: typeof parsed?.practice === 'number' ? parsed.practice : DEFAULT_CATEGORY_LEADS.practice,
+      other: typeof parsed?.other === 'number' ? parsed.other : DEFAULT_CATEGORY_LEADS.other,
+    };
+  } catch {
+    return { ...DEFAULT_CATEGORY_LEADS };
+  }
+}
 
 const MEETING_PRESETS = [
   { label: '2時間前集合', minutes: 120, shortLabel: '2時間前 (120分)' },
   { label: '1時間半前集合', minutes: 90, shortLabel: '1時間半前 (90分)' },
   { label: '1時間前集合', minutes: 60, shortLabel: '1時間前 (60分)' },
-  { label: '45分前集合', minutes: 45, shortLabel: '45分前' },
+  { label: '30分前集合', minutes: 30, shortLabel: '30分前' },
+  { label: '15分前集合', minutes: 15, shortLabel: '15分前' },
   { label: '開始時刻そのまま', minutes: 0, shortLabel: 'そのまま (0分)' },
 ];
 
@@ -55,9 +92,24 @@ export default function ScheduleImageImporter({
   const [errorMessage, setErrorMessage] = useState('');
 
   const [parsedEvents, setParsedEvents] = useState([]);
+  const [checkedEventIds, setCheckedEventIds] = useState(() => new Set());
   const [selectedEventId, setSelectedEventId] = useState(null);
-  const [meetingLeadMinutes, setMeetingLeadMinutes] = useState(120); // デフォルト2時間前集合
+  const [categoryLeads, setCategoryLeads] = useState(() => loadSavedCategoryLeads());
   const [customLeadMinutes, setCustomLeadMinutes] = useState('');
+
+  const getLeadMinutesForEvent = (ev) => {
+    const group = getCategoryGroupKey(ev?.category);
+    return categoryLeads[group] ?? DEFAULT_CATEGORY_LEADS[group] ?? 120;
+  };
+
+  const updateCategoryLead = (category, minutes) => {
+    const group = getCategoryGroupKey(category);
+    setCategoryLeads((prev) => {
+      const next = { ...prev, [group]: minutes };
+      safeSetItem(CATEGORY_LEAD_STORAGE_KEY, JSON.stringify(next));
+      return next;
+    });
+  };
 
   const fileInputRef = useRef(null);
 
@@ -80,8 +132,8 @@ export default function ScheduleImageImporter({
   };
 
   const handleFileSelect = async (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+    const files = Array.from(e.target.files || []);
+    if (files.length === 0) return;
 
     if (!apiKey) {
       setShowKeyInput(true);
@@ -94,38 +146,53 @@ export default function ScheduleImageImporter({
       setAnalyzing(true);
       setErrorMessage('');
       setSaveSuccessMessage('');
-      setAnalysisStage('画像を軽量化しています...');
 
       const resizeOptions =
         parseMode === 'fast'
           ? { maxDimension: 1152, quality: 0.72 }
           : { maxDimension: 1600, quality: 0.85 };
-      const { base64, mimeType } = await fileToBase64(file, resizeOptions);
 
-      setAnalysisStage(
-        parseMode === 'fast'
-          ? 'AI（高速モード）で予定を読み取り中...'
-          : 'AI（高精度モード）で予定を読み取り中...'
-      );
-      const events = await parseScheduleImageWithGemini(base64, mimeType, apiKey, {
-        mode: parseMode,
-      });
-      if (events.length === 0) {
+      const combinedEvents = [];
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        const prefix = files.length > 1 ? `${i + 1}/${files.length}枚目: ` : '';
+        setAnalysisStage(`${prefix}画像を軽量化しています...`);
+        const { base64, mimeType } = await fileToBase64(file, resizeOptions);
+
+        setAnalysisStage(
+          `${prefix}${
+            parseMode === 'fast'
+              ? 'AI（高速モード）で予定を読み取り中...'
+              : 'AI（高精度モード）で予定を読み取り中...'
+          }`
+        );
+        const events = await parseScheduleImageWithGemini(base64, mimeType, apiKey, {
+          mode: parseMode,
+        });
+        events.forEach((ev, idx) => {
+          combinedEvents.push({
+            ...ev,
+            id: `${ev.id || 'evt'}_f${i}_${idx}`,
+          });
+        });
+      }
+
+      if (combinedEvents.length === 0) {
         setErrorMessage('画像・PDFから予定を検出できませんでした。別のファイルをお試しいただくか、サンプルデータをお試しください。');
       } else {
-        setAnalysisStage('カレンダーへ保存中...');
-        setParsedEvents(events);
-        setSelectedEventId(events[0].id);
-        // 解析完了と同時に自動でスケジュール帳にもスマート蓄積（LINE共有時に漏れないようにする）
-        const currentLead = customLeadMinutes !== '' ? Number(customLeadMinutes) : meetingLeadMinutes;
-        const result = mergeImportedEvents(events, currentLead);
+        setParsedEvents(combinedEvents);
+        const defaultChecked = new Set(
+          combinedEvents
+            .filter((ev) => ev.title !== 'OFF' && ev.category !== 'OFF')
+            .map((ev) => ev.id)
+        );
+        setCheckedEventIds(defaultChecked);
+        const firstActive = combinedEvents.find((ev) => ev.title !== 'OFF' && ev.category !== 'OFF') || combinedEvents[0];
+        setSelectedEventId(firstActive.id);
         const totalSec = ((performance.now() - startedAt) / 1000).toFixed(1);
         setSaveSuccessMessage(
-          `🎉 画像から${events.length}件を${totalSec}秒で検出し、カレンダーへ自動保存しました！（新規${result.addedCount}件・更新${result.updatedCount}件）`
+          `🎉 ${files.length > 1 ? `${files.length}枚の画像から` : ''}${combinedEvents.length}件を${totalSec}秒で検出！参加する予定にチェックを入れて登録してください。`
         );
-        if (onSaveToSchedules) {
-          onSaveToSchedules(result.schedules);
-        }
       }
     } catch (err) {
       console.error(err);
@@ -140,26 +207,59 @@ export default function ScheduleImageImporter({
   // サンプルデータ読み込み（ユーザー提供の画像データ）
   const handleLoadSample = () => {
     setErrorMessage('');
+    setSaveSuccessMessage('');
     setParsedEvents(SAMPLE_SCHEDULE_EVENTS);
+    setCheckedEventIds(
+      new Set(
+        SAMPLE_SCHEDULE_EVENTS
+          .filter((ev) => ev.title !== 'OFF' && ev.category !== 'OFF')
+          .map((ev) => ev.id)
+      )
+    );
     // 添付画像の「新人戦 vs ソルース 10:00@羽生中央公園」をデフォルト選択
     setSelectedEventId('sample-3');
-    setMeetingLeadMinutes(120);
     if (controlledIsOpen === undefined) setLocalIsOpen(true);
   };
 
   const selectedEvent = parsedEvents.find((e) => e.id === selectedEventId) || null;
+  const selectableEvents = parsedEvents.filter((ev) => ev.title !== 'OFF' && ev.category !== 'OFF');
+  const checkedCount = selectableEvents.filter((ev) => checkedEventIds.has(ev.id)).length;
 
-  // 選択中の予定の集合時刻を算出
-  const effectiveMeetingLead = customLeadMinutes !== '' ? Number(customLeadMinutes) : meetingLeadMinutes;
+  const toggleCheckEvent = (id) => {
+    setCheckedEventIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const handleCheckAll = () => {
+    setCheckedEventIds(new Set(selectableEvents.map((ev) => ev.id)));
+  };
+
+  const handleUncheckAll = () => {
+    setCheckedEventIds(new Set());
+  };
+
+  // 選択中の予定の集合時刻を算出（カテゴリ別ルールを自動適用）
+  const selectedCategoryLead = selectedEvent ? getLeadMinutesForEvent(selectedEvent) : categoryLeads.match;
+  const effectiveMeetingLead = customLeadMinutes !== '' ? Number(customLeadMinutes) : selectedCategoryLead;
   const calculatedMeetingTime = selectedEvent?.time
     ? calculateMeetingTime(selectedEvent.time, effectiveMeetingLead)
     : '09:00';
 
-  // 抽出された全予定をスケジュール帳（カレンダー）に蓄積・保存
-  const handleSaveAllToSchedule = () => {
-    if (parsedEvents.length === 0) return;
-    const result = mergeImportedEvents(parsedEvents, effectiveMeetingLead);
-    setSaveSuccessMessage(`🎉 ${result.addedCount}件の新規予定を追加、${result.updatedCount}件を更新しました！`);
+  // チェック済みの予定だけをスケジュール帳（カレンダー）に蓄積・保存
+  const handleSaveCheckedToSchedule = () => {
+    const targets = parsedEvents
+      .filter((ev) => checkedEventIds.has(ev.id))
+      .map((ev) => ({
+        ...ev,
+        meetingLeadMinutes: getLeadMinutesForEvent(ev),
+      }));
+    if (targets.length === 0) return;
+    const result = mergeImportedEvents(targets, effectiveMeetingLead);
+    setSaveSuccessMessage(`🎉 ${targets.length}件をカレンダーへ登録しました！（新規${result.addedCount}件・更新${result.updatedCount}件）`);
     if (onSaveToSchedules) {
       onSaveToSchedules(result.schedules);
     }
@@ -172,7 +272,10 @@ export default function ScheduleImageImporter({
   const handleApply = () => {
     if (!selectedEvent) return;
 
-    const merged = mergeImportedEvents([selectedEvent], effectiveMeetingLead);
+    const merged = mergeImportedEvents(
+      [{ ...selectedEvent, meetingLeadMinutes: effectiveMeetingLead }],
+      effectiveMeetingLead
+    );
     if (onSaveToSchedules) {
       onSaveToSchedules(merged.schedules);
     }
@@ -342,6 +445,7 @@ export default function ScheduleImageImporter({
               ref={fileInputRef}
               type="file"
               accept="image/*,application/pdf"
+              multiple
               disabled={analyzing}
               onChange={handleFileSelect}
               className="hidden"
@@ -357,7 +461,7 @@ export default function ScheduleImageImporter({
                 <Upload className="w-5 h-5" />
               </div>
               <span className="text-xs font-black text-slate-800">
-                日程表の画像・PDFを選択 / 写真を撮る
+                日程表の画像・PDFを選択（複数枚OK）
               </span>
               <span className="text-[10px] text-slate-500 mt-0.5">
                 LINEで届いた日程表スクショ・カレンダー画像・PDF資料など
@@ -415,25 +519,38 @@ export default function ScheduleImageImporter({
               )}
 
               <div className="flex flex-wrap items-center justify-between gap-2 text-xs font-extrabold text-slate-800 px-1">
-                <span className="flex items-center gap-1">
-                  <span>📅 検出された予定 ({parsedEvents.length}件)</span>
-                  <span className="text-[10px] text-slate-500 font-normal">
-                    タップして個別選択、または一括蓄積
-                  </span>
-                </span>
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <span>📅 検出 ({parsedEvents.length}件)</span>
+                  <button
+                    type="button"
+                    onClick={handleCheckAll}
+                    className="text-[10px] font-extrabold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 px-2 py-0.5 rounded-lg"
+                  >
+                    全選択
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleUncheckAll}
+                    className="text-[10px] font-bold text-slate-600 bg-slate-100 hover:bg-slate-200 px-2 py-0.5 rounded-lg"
+                  >
+                    全解除
+                  </button>
+                </div>
                 <div className="flex items-center gap-2">
                   <button
                     type="button"
-                    onClick={handleSaveAllToSchedule}
-                    className="bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white font-black text-[11px] px-3 py-1.5 rounded-xl shadow-sm flex items-center gap-1 transition"
+                    onClick={handleSaveCheckedToSchedule}
+                    disabled={checkedCount === 0}
+                    className="bg-emerald-600 hover:bg-emerald-700 active:scale-95 disabled:opacity-50 text-white font-black text-[11px] px-3 py-1.5 rounded-xl shadow-sm flex items-center gap-1 transition"
                   >
                     <CalendarCheck className="w-3.5 h-3.5" />
-                    <span>全{parsedEvents.length}件をカレンダーに蓄積</span>
+                    <span>選択した{checkedCount}件をカレンダーに登録</span>
                   </button>
                   <button
                     type="button"
                     onClick={() => {
                       setParsedEvents([]);
+                      setCheckedEventIds(new Set());
                       setSelectedEventId(null);
                     }}
                     className="text-[11px] text-slate-400 hover:text-slate-600"
@@ -448,6 +565,8 @@ export default function ScheduleImageImporter({
                 {parsedEvents.map((ev) => {
                   const isSelected = selectedEventId === ev.id;
                   const isOff = ev.title === 'OFF' || ev.category === 'OFF';
+                  const isChecked = checkedEventIds.has(ev.id);
+                  const evLead = getLeadMinutesForEvent(ev);
 
                   return (
                     <div
@@ -470,6 +589,16 @@ export default function ScheduleImageImporter({
                       }`}
                     >
                       <div className="flex items-start justify-between gap-2">
+                        <div className="pt-0.5 shrink-0" onClick={(e) => e.stopPropagation()}>
+                          <input
+                            type="checkbox"
+                            checked={isChecked}
+                            disabled={isOff}
+                            onChange={() => toggleCheckEvent(ev.id)}
+                            aria-label={`${ev.title}をカレンダー登録対象に含める`}
+                            className="w-4 h-4 rounded text-emerald-600 focus:ring-emerald-500 cursor-pointer disabled:cursor-not-allowed"
+                          />
+                        </div>
                         <div className="min-w-0 flex-1">
                           <div className="flex items-center gap-1.5 flex-wrap mb-1">
                             <span className="text-[10px] font-black bg-slate-900 text-white px-2 py-0.5 rounded-full">
@@ -484,6 +613,11 @@ export default function ScheduleImageImporter({
                               <span className="text-[10px] font-black bg-amber-100 text-amber-900 px-2 py-0.5 rounded-md flex items-center gap-0.5">
                                 <Clock className="w-2.5 h-2.5" />
                                 <span>{ev.time} {ev.isKickoff ? 'KO' : ''}</span>
+                              </span>
+                            )}
+                            {!isOff && (
+                              <span className="text-[10px] font-bold bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded-md">
+                                集合 {evLead}分前
                               </span>
                             )}
                           </div>
@@ -521,10 +655,12 @@ export default function ScheduleImageImporter({
                     </span>
                   </div>
 
-                  {/* 集合ルール設定 */}
+                  {/* 集合ルール設定（カテゴリ別に自動記憶） */}
                   <div>
                     <div className="flex items-center justify-between text-xs font-black text-slate-800 mb-1.5">
-                      <span>集合ルールの指定</span>
+                      <span>
+                        集合ルール（{getCategoryGroupLabel(getCategoryGroupKey(selectedEvent.category))}として記憶）
+                      </span>
                       <span className="text-[11px] font-bold text-emerald-700">
                         {selectedEvent.time ? `${selectedEvent.time} 開始` : '時間未定'}
                       </span>
@@ -532,13 +668,13 @@ export default function ScheduleImageImporter({
 
                     <div className="grid grid-cols-2 gap-1.5">
                       {MEETING_PRESETS.map((p) => {
-                        const active = customLeadMinutes === '' && meetingLeadMinutes === p.minutes;
+                        const active = customLeadMinutes === '' && selectedCategoryLead === p.minutes;
                         return (
                           <button
                             key={p.minutes}
                             type="button"
                             onClick={() => {
-                              setMeetingLeadMinutes(p.minutes);
+                              updateCategoryLead(selectedEvent.category, p.minutes);
                               setCustomLeadMinutes('');
                             }}
                             className={`py-2 px-2 rounded-xl text-xs font-extrabold border transition ${

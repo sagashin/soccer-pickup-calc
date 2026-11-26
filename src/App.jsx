@@ -1245,10 +1245,12 @@ export default function App() {
     return list.slice(0, 8);
   }, [presets, recentVenues, scheduleRefreshKey, activeTab]);
 
-  // 今後の試合予定件数（ボトムナビバッジ用）
-  const upcomingScheduleCount = useMemo(() => {
+  // 今後の試合予定件数（ボトムナビバッジ用）＆ 直近の次の予定（トップ画面1タップ計算用）
+  const { upcomingScheduleCount, nextUpcomingEvent } = useMemo(() => {
     const todayStr = formatLocalDate(new Date());
-    return getSavedSchedules().filter((s) => s.dateIso >= todayStr).length;
+    const upcoming = getSavedSchedules().filter((s) => s.dateIso >= todayStr);
+    const nextActive = upcoming.find((s) => s.title !== 'OFF' && s.category !== 'OFF') || null;
+    return { upcomingScheduleCount: upcoming.length, nextUpcomingEvent: nextActive };
   }, [scheduleRefreshKey, activeTab]);
 
   // 現在の目的地に一致するチーム登録の会場・駐車場ルール
@@ -1810,6 +1812,65 @@ export default function App() {
                   <Train className="w-4 h-4" />
                   <span>🚃 電車で行く</span>
                 </button>
+              </div>
+
+              {/* ⚽ 次の予定（1タップ計算）＆ 📷 画像から予定追加 クイックバー */}
+              <div className="bg-white rounded-2xl p-2.5 shadow-sm border border-slate-200/90 space-y-2">
+                {nextUpcomingEvent ? (
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <span className="text-[10px] font-black px-1.5 py-0.5 rounded-md bg-emerald-100 text-emerald-800">
+                          ⚽ 次の予定
+                        </span>
+                        <span className="text-[11px] font-extrabold text-slate-700">
+                          {nextUpcomingEvent.dateLabel || nextUpcomingEvent.dateIso}
+                        </span>
+                        {nextUpcomingEvent.meetingTime && (
+                          <span className="text-[10px] font-black text-emerald-700">
+                            {nextUpcomingEvent.meetingTime}集合
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-xs font-black text-slate-900 truncate mt-0.5">
+                        {nextUpcomingEvent.title}
+                        {nextUpcomingEvent.venue ? ` @ ${nextUpcomingEvent.venue}` : ''}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => handleSelectScheduleForCalculation(nextUpcomingEvent)}
+                      className="bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white font-black text-[11px] px-3 py-2 rounded-xl shadow-xs shrink-0 flex items-center gap-1 transition"
+                    >
+                      <Navigation className="w-3.5 h-3.5" />
+                      <span>1タップ計算</span>
+                    </button>
+                  </div>
+                ) : (
+                  <div className="text-[11px] font-bold text-slate-500 px-0.5">
+                    📅 次の予定がまだありません。日程表スクショから追加できます
+                  </div>
+                )}
+
+                <div className="flex items-center gap-2 pt-1 border-t border-slate-100">
+                  <button
+                    type="button"
+                    onClick={() => setIsScheduleImporterOpen(true)}
+                    className="flex-1 bg-emerald-50 hover:bg-emerald-100 active:scale-[0.99] text-emerald-900 border border-emerald-200 font-black text-xs py-2 px-3 rounded-xl flex items-center justify-center gap-1.5 transition"
+                  >
+                    <Camera className="w-3.5 h-3.5 text-emerald-600" />
+                    <span>📷 画像から予定を追加</span>
+                  </button>
+                  {nextUpcomingEvent && (
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab('schedule')}
+                      className="bg-slate-100 hover:bg-slate-200 active:scale-95 text-slate-700 font-extrabold text-xs py-2 px-3 rounded-xl shrink-0 transition"
+                    >
+                      全{upcomingScheduleCount}件
+                    </button>
+                  )}
+                </div>
               </div>
 
               {/* ⚽ 試合日程から選択中の試合バナー（どの試合を計算中か一目で把握＆KO 2.5h前切替） */}
@@ -2918,62 +2979,6 @@ export default function App() {
                   />
                 </Suspense>
               </ErrorBoundary>
-
-              {/* 📸 画像インポーター（全画面ポップアップモーダル：スクロール不要で目の前に表示） */}
-              {isScheduleImporterOpen && (
-                <div
-                  role="dialog"
-                  aria-modal="true"
-                  aria-labelledby="schedule-importer-modal-title"
-                  onClick={(e) => {
-                    if (e.target === e.currentTarget) setIsScheduleImporterOpen(false);
-                  }}
-                  className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4 overflow-y-auto"
-                >
-                  <div className="bg-white rounded-3xl max-w-lg w-full max-h-[92vh] overflow-y-auto p-4 sm:p-5 shadow-2xl border border-slate-200 space-y-3">
-                    <div className="flex items-center justify-between pb-2 border-b border-slate-100">
-                      <div className="flex items-center gap-2">
-                        <div className="w-8 h-8 rounded-xl bg-emerald-100 text-emerald-700 flex items-center justify-center">
-                          <Camera className="w-4 h-4" />
-                        </div>
-                        <div>
-                          <h3 id="schedule-importer-modal-title" className="text-sm font-black text-slate-900 leading-tight">
-                            日程表画像から一発解析・カレンダー蓄積
-                          </h3>
-                          <p className="text-[10px] font-bold text-slate-500">
-                            LINEのスクショや写真をアップロード
-                          </p>
-                        </div>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => setIsScheduleImporterOpen(false)}
-                        aria-label="閉じる"
-                        className="w-8 h-8 rounded-xl hover:bg-slate-100 flex items-center justify-center text-slate-400 hover:text-slate-700 font-bold transition"
-                        title="閉じる"
-                      >
-                        ✕
-                      </button>
-                    </div>
-
-                    <ErrorBoundary compact>
-                      <Suspense fallback={<LazyTabFallback />}>
-                        <ScheduleImageImporter
-                          isOpen={true}
-                          hideHeader={true}
-                          onToggleOpen={() => setIsScheduleImporterOpen((p) => !p)}
-                          onApplySchedule={handleApplySchedule}
-                          onSaveToSchedules={() => {
-                            // 保存されたらカレンダーを即時再描画し、クラウド同期してモーダルを閉じる
-                            handleSchedulesChanged();
-                            setIsScheduleImporterOpen(false);
-                          }}
-                        />
-                      </Suspense>
-                    </ErrorBoundary>
-                  </div>
-                </div>
-              )}
             </div>
           )}
 
@@ -3263,6 +3268,64 @@ export default function App() {
             <span className="text-[10px]">ノート</span>
           </button>
         </div>
+
+        {/* 📸 画像インポーター（全画面ポップアップモーダル：トップ画面・日程タブ共通） */}
+        {isScheduleImporterOpen && (
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="schedule-importer-modal-title"
+            onClick={(e) => {
+              if (e.target === e.currentTarget) setIsScheduleImporterOpen(false);
+            }}
+            className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4 overflow-y-auto"
+          >
+            <div className="bg-white rounded-3xl max-w-lg w-full max-h-[92vh] overflow-y-auto p-4 sm:p-5 shadow-2xl border border-slate-200 space-y-3">
+              <div className="flex items-center justify-between pb-2 border-b border-slate-100">
+                <div className="flex items-center gap-2">
+                  <div className="w-8 h-8 rounded-xl bg-emerald-100 text-emerald-700 flex items-center justify-center">
+                    <Camera className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <h3 id="schedule-importer-modal-title" className="text-sm font-black text-slate-900 leading-tight">
+                      日程表画像から一発解析・カレンダー蓄積
+                    </h3>
+                    <p className="text-[10px] font-bold text-slate-500">
+                      LINEのスクショや写真をアップロード（複数枚OK）
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setIsScheduleImporterOpen(false)}
+                  aria-label="閉じる"
+                  className="w-8 h-8 rounded-xl hover:bg-slate-100 flex items-center justify-center text-slate-400 hover:text-slate-700 font-bold transition"
+                  title="閉じる"
+                >
+                  ✕
+                </button>
+              </div>
+
+              <ErrorBoundary compact>
+                <Suspense fallback={<LazyTabFallback />}>
+                  <ScheduleImageImporter
+                    isOpen={true}
+                    hideHeader={true}
+                    onToggleOpen={() => setIsScheduleImporterOpen((p) => !p)}
+                    onApplySchedule={(payload) => {
+                      handleApplySchedule(payload);
+                      setIsScheduleImporterOpen(false);
+                    }}
+                    onSaveToSchedules={() => {
+                      handleSchedulesChanged();
+                      setIsScheduleImporterOpen(false);
+                    }}
+                  />
+                </Suspense>
+              </ErrorBoundary>
+            </div>
+          </div>
+        )}
 
         {/* Google Maps APIキー設定モーダル */}
         {isGmapsModalOpen && (
